@@ -1,5 +1,8 @@
 import streamlit as st
 from st_diff_viewer import diff_viewer
+from streamlit_monaco import st_monaco
+
+from model import stream_chat
 
 ##########
 
@@ -26,25 +29,79 @@ st.set_page_config(page_title="텍스트 비교기", layout="wide")
 
 st.title("Prompt Playground")
 
-st.markdown("프롬프팅 에이전트를 결합한 playground")
+header_col1, header_col2 = st.columns([8, 1])
 
-col1, col2 = st.columns(2)
+with header_col1:
+    st.markdown("프롬프팅 에이전트를 결합한 playground")
 
-with col1:
-    old_text = st.text_area("[Old]", height=300, value="a = 0")
+with header_col2:
+    execute_button = st.button("Execute")
 
-with col2:
-    new_text = st.text_area("[New]", height=300, value="a = 1")
+with st.expander("System Prompt", expanded=False):
+    st.subheader("System Prompt 비교")
 
-split_view = st.toggle("Split View", value=True)
+    col1, col2 = st.columns(2)
 
-if old_text.strip() == "" and new_text.strip() == "":
-    st.warning("비교할 텍스트를 입력해주세요!")
-else:
-    diff_viewer(
-        old_text,
-        new_text,
-        split_view=split_view,
-        use_dark_theme=True,
-        styles=one_dark_pro_styles,
-    )
+    with col1:
+        system_old_text = st_monaco(
+            value="시스템 프롬프트 OLD",
+            language="markdown",
+            height="300px",
+            theme="vs-dark",
+        )
+
+    with col2:
+        system_new_text = st_monaco(
+            value="시스템 프롬프트 NEW",
+            language="markdown",
+            height="300px",
+            theme="vs-dark",
+        )
+
+    split_view_sys = st.toggle("System Split View", value=True)
+
+    if (system_old_text or "").strip() == "" and (system_new_text or "").strip() == "":
+        st.warning("System Prompt의 텍스트를 입력해주세요!")
+    else:
+        diff_viewer(
+            system_old_text or "",
+            system_new_text or "",
+            split_view=split_view_sys,
+            use_dark_theme=True,
+            styles=one_dark_pro_styles,
+        )
+
+
+with st.expander("User Prompt", expanded=False):
+    st.subheader("User Prompt 비교")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        user_old_text = st_monaco(
+            value="유저 프롬프트 OLD",
+            language="markdown",
+            height="300px",
+            theme="vs-dark",
+        )
+
+    with col2:
+        user_new_text = st_monaco(
+            value="유저 프롬프트 NEW",
+            language="markdown",
+            height="300px",
+            theme="vs-dark",
+        )
+
+    split_view_user = st.toggle("User Split View", value=True)
+
+    if (user_old_text or "").strip() == "" and (user_new_text or "").strip() == "":
+        st.warning("User Prompt의 텍스트를 입력해주세요!")
+    else:
+        diff_viewer(
+            user_old_text or "",
+            user_new_text or "",
+            split_view=split_view_user,
+            use_dark_theme=True,
+            styles=one_dark_pro_styles,
+        )

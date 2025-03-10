@@ -1,2 +1,5 @@
 streamlit
 st-diff-viewer
+streamlit_monaco
+openai
+dotenv
