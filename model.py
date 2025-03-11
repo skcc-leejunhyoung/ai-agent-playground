@@ -1,3 +1,5 @@
+# model.py
+
 import os
 import openai
 from dotenv import load_dotenv
@@ -15,7 +17,7 @@ AOAI_DEPLOY_GPT4O_MINI = os.getenv("AOAI_DEPLOY_GPT4O_MINI")
 openai.api_type = "azure"
 openai.api_base = AOAI_ENDPOINT
 openai.api_key = AOAI_API_KEY
-openai.api_version = "2024-02-15-preview"  # 최신 버전으로 변경 가능
+openai.api_version = "2024-02-15-preview"
 
 
 def stream_chat(

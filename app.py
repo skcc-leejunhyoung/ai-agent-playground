@@ -1,8 +1,12 @@
+# app.py
+
 import streamlit as st
 from st_diff_viewer import diff_viewer
 from streamlit_monaco import st_monaco
+import streamlit.components.v1 as components
 
 from model import stream_chat
+from components.result_card import result_cards
 
 ##########
 
@@ -105,3 +109,18 @@ with st.expander("User Prompt", expanded=False):
             use_dark_theme=True,
             styles=one_dark_pro_styles,
         )
+
+# 예시: 카드에 들어갈 내용을 리스트로 전달
+result = [
+    "##첫 번째 결과입니다.",
+    "#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.#두 번째 결과입니다.",
+    "세 번째 결과입니다.",
+    "네 번째 결과입니다.",
+    "다섯 번째 결과입니다.",
+    "여섯 번째 결과입니다.",
+    "일곱 번째 결과입니다.",
+    "여덟 번째 결과입니다.",
+]
+
+# 렌더링 호출
+result_cards(result, height=500)
