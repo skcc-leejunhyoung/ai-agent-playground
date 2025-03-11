@@ -1,3 +1,5 @@
+# components/result_card.py
+
 import streamlit.components.v1 as components
 import markdown
 
