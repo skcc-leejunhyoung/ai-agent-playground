@@ -32,18 +32,31 @@ if "results" not in st.session_state:
     st.session_state["results"] = []
     st.session_state["system_count"] = 1
     st.session_state["user_count"] = 1
+    st.session_state["model_names"] = []
 
 ##########
 
 st.title("Prompt Playground")
 
-header_col1, header_col2 = st.columns([8, 1])
+header_col1, header_col2 = st.columns([8, 1.3])
 
 with header_col1:
     st.markdown("프롬프팅 에이전트를 결합한 playground")
 
 with header_col2:
-    execute_button = st.button("Execute", use_container_width=True)
+    model_count = (
+        2
+        if st.session_state.get("model_names")
+        and len(st.session_state["model_names"]) > 1
+        else 1
+    )
+    system_count = 2 if st.session_state.get("system_toggle") else 1
+    user_count = 2 if st.session_state.get("user_toggle") else 1
+
+    total_runs = model_count * system_count * user_count
+    execute_label = f"{total_runs} | Execute"
+
+    execute_button = st.button(execute_label, use_container_width=True)
 
 ##########
 with st.expander("System Prompt", expanded=False):
@@ -133,6 +146,44 @@ with st.expander("User Prompt", expanded=False):
         )
 
 ##########
+with st.expander("Model", expanded=False):
+    model_compare_toggle = st.toggle("다중 Model 활성화", key="model_toggle")
+
+    if model_compare_toggle:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            model_1 = st.selectbox(
+                "모델 선택 1",
+                ("GPT-4o", "GPT-4o mini"),
+                index=0,
+                key="model_selector_1",
+                label_visibility="collapsed",
+            )
+
+        with col2:
+            model_2 = st.selectbox(
+                "모델 선택 2",
+                ("GPT-4o", "GPT-4o mini"),
+                index=1,
+                key="model_selector_2",
+                label_visibility="collapsed",
+            )
+
+        model_list = [model_1, model_2]
+
+    else:
+        single_model = st.selectbox(
+            "모델 선택",
+            ("GPT-4o", "GPT-4o mini"),
+            index=0,
+            key="model_selector_single",
+            label_visibility="collapsed",
+        )
+
+        model_list = [single_model]
+
+##########
 if execute_button:
     if system_compare_toggle:
         system_prompts = [system_old_text or "", system_new_text or ""]
@@ -145,31 +196,38 @@ if execute_button:
         user_prompts = [user_single_text or ""]
 
     st.info(
-        f"총 {len(system_prompts)}개의 시스템 프롬프트와 {len(user_prompts)}개의 유저 프롬프트 조합으로 실행됩니다."
+        f"||  모델:  {len(model_list)}개  || 시스템 프롬프트:  {len(system_prompts)}개  || 유저 프롬프트:  {len(user_prompts)}개  || 조합으로 실행됩니다."
     )
 
     st.session_state["results"] = []
     st.session_state["system_count"] = len(system_prompts)
     st.session_state["user_count"] = len(user_prompts)
+    st.session_state["model_names"] = model_list
 
     with st.spinner("Processing.."):
-        for sys_idx, sys_prompt in enumerate(system_prompts, 1):
-            for user_idx, user_prompt in enumerate(user_prompts, 1):
-                full_response = ""
+        for model_name in model_list:
+            use_gpt4o_mini = True if model_name == "GPT-4o mini" else False
 
-                for token in stream_chat(
-                    system_prompt=sys_prompt, user_prompt=user_prompt
-                ):
-                    full_response += token
+            for sys_idx, sys_prompt in enumerate(system_prompts, 1):
+                for user_idx, user_prompt in enumerate(user_prompts, 1):
+                    full_response = ""
 
-                result_markdown = full_response
-                st.session_state["results"].append(result_markdown)
+                    for token in stream_chat(
+                        system_prompt=sys_prompt,
+                        user_prompt=user_prompt,
+                        use_gpt4o_mini=use_gpt4o_mini,
+                    ):
+                        full_response += token
 
-##########
+                    result_markdown = full_response
+                    st.session_state["results"].append(result_markdown)
+
+########## Results ##########
 if st.session_state["results"]:
     result_cards(
         st.session_state["results"],
         system_count=st.session_state.get("system_count", 1),
         user_count=st.session_state.get("user_count", 1),
+        model_names=st.session_state.get("model_names", []),
         height=500,
     )
