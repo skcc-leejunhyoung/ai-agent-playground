@@ -3,7 +3,6 @@
 import streamlit as st
 from st_diff_viewer import diff_viewer
 from streamlit_monaco import st_monaco
-import streamlit.components.v1 as components
 
 from model import stream_chat
 from components.result_card import result_cards
@@ -44,17 +43,11 @@ with header_col1:
     st.markdown("프롬프팅 에이전트를 결합한 playground")
 
 with header_col2:
-    execute_button = st.button("Execute")
+    execute_button = st.button("Execute", use_container_width=True)
 
 ##########
 with st.expander("System Prompt", expanded=False):
-    sub_col1, sub_col2 = st.columns([8, 2])
-
-    with sub_col1:
-        st.subheader("System Prompt 비교")
-
-    with sub_col2:
-        system_compare_toggle = st.toggle("비교 활성화", key="system_toggle")
+    system_compare_toggle = st.toggle("다중 System Prompt 활성화", key="system_toggle")
 
     if system_compare_toggle:
         col1, col2 = st.columns(2)
@@ -99,13 +92,7 @@ with st.expander("System Prompt", expanded=False):
 
 ##########
 with st.expander("User Prompt", expanded=False):
-    sub_col1, sub_col2 = st.columns([8, 2])
-
-    with sub_col1:
-        st.subheader("User Prompt 비교")
-
-    with sub_col2:
-        user_compare_toggle = st.toggle("비교 활성화", key="user_toggle")
+    user_compare_toggle = st.toggle("다중 User Prompt 활성화", key="user_toggle")
 
     if user_compare_toggle:
         col1, col2 = st.columns(2)
