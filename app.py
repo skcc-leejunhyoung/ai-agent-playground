@@ -44,19 +44,14 @@ with header_col1:
     st.markdown("프롬프팅 에이전트를 결합한 playground")
 
 with header_col2:
-    model_count = (
-        2
-        if st.session_state.get("model_names")
-        and len(st.session_state["model_names"]) > 1
-        else 1
-    )
+    model_count = 2 if st.session_state.get("model_toggle") else 1
     system_count = 2 if st.session_state.get("system_toggle") else 1
     user_count = 2 if st.session_state.get("user_toggle") else 1
 
     total_runs = model_count * system_count * user_count
     execute_label = f"{total_runs} | Execute"
 
-    execute_button = st.button(execute_label, use_container_width=True)
+    execute_button = st.button(execute_label, type="primary", use_container_width=True)
 
 ##########
 with st.expander("System Prompt", expanded=False):
