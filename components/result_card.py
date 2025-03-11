@@ -4,12 +4,17 @@ import streamlit.components.v1 as components
 import markdown
 
 
-def result_cards(card_contents: list[str], height: int = 300):
+def result_cards(
+    card_contents: list[str], system_count: int, user_count: int, height: int = 300
+):
     """
     결과 카드 리스트를 렌더링하는 함수 (카드 클릭 시 모달 팝업)
-    """
 
-    ###########
+    :param card_contents: 카드에 들어갈 결과 텍스트 리스트
+    :param system_count: 시스템 프롬프트 개수
+    :param user_count: 유저 프롬프트 개수
+    :param height: 카드 전체 영역 높이
+    """
 
     cards_html = """
         <style>
@@ -22,7 +27,6 @@ def result_cards(card_contents: list[str], height: int = 300):
             flex-wrap: nowrap;
             overflow-x: auto;
             padding: 1rem;
-
             -ms-overflow-style: none;
             scrollbar-width: none;
         }
@@ -102,16 +106,21 @@ def result_cards(card_contents: list[str], height: int = 300):
         <div class="scrolling-wrapper">
     """
 
-    ###########
-
     modals = ""
+
+    # ✅ 카드 생성 (인덱스 1부터 시작)
     for idx, content in enumerate(card_contents, 1):
         html_content = markdown.markdown(content)
         modal_id = f"modal_{idx}"
 
+        # ✅ sys_num, user_num 계산 (행 우선 순회)
+        sys_num = ((idx - 1) // user_count) + 1
+        user_num = ((idx - 1) % user_count) + 1
+        title = f"Sys{sys_num} + User{user_num} 결과"
+
         cards_html += f"""
             <div class="card" onclick="openModal('{modal_id}')">
-                <h4>결과 카드 {idx}</h4>
+                <h4>{title}</h4>
                 {html_content}
             </div>
         """
@@ -120,7 +129,7 @@ def result_cards(card_contents: list[str], height: int = 300):
             <div id="{modal_id}" class="modal">
                 <div class="modal-content">
                     <span class="close" onclick="closeModal('{modal_id}')">&times;</span>
-                    <h2>결과 카드 {idx} 상세 보기</h2>
+                    <h2>{title} 상세 보기</h2>
                     {html_content}
                 </div>
             </div>

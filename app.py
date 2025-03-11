@@ -29,10 +29,10 @@ one_dark_pro_styles = {
 
 st.set_page_config(page_title="텍스트 비교기", layout="wide")
 
-##########
-
 if "results" not in st.session_state:
     st.session_state["results"] = []
+    st.session_state["system_count"] = 1
+    st.session_state["user_count"] = 1
 
 ##########
 
@@ -47,7 +47,6 @@ with header_col2:
     execute_button = st.button("Execute")
 
 ##########
-
 with st.expander("System Prompt", expanded=False):
     sub_col1, sub_col2 = st.columns([8, 2])
 
@@ -99,7 +98,6 @@ with st.expander("System Prompt", expanded=False):
         )
 
 ##########
-
 with st.expander("User Prompt", expanded=False):
     sub_col1, sub_col2 = st.columns([8, 2])
 
@@ -148,7 +146,6 @@ with st.expander("User Prompt", expanded=False):
         )
 
 ##########
-
 if execute_button:
     if system_compare_toggle:
         system_prompts = [system_old_text or "", system_new_text or ""]
@@ -165,6 +162,8 @@ if execute_button:
     )
 
     st.session_state["results"] = []
+    st.session_state["system_count"] = len(system_prompts)
+    st.session_state["user_count"] = len(user_prompts)
 
     with st.spinner("Processing.."):
         for sys_idx, sys_prompt in enumerate(system_prompts, 1):
@@ -179,6 +178,11 @@ if execute_button:
                 result_markdown = full_response
                 st.session_state["results"].append(result_markdown)
 
-
+##########
 if st.session_state["results"]:
-    result_cards(st.session_state["results"], height=500)
+    result_cards(
+        st.session_state["results"],
+        system_count=st.session_state.get("system_count", 1),
+        user_count=st.session_state.get("user_count", 1),
+        height=500,
+    )
