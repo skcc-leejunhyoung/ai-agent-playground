@@ -70,7 +70,7 @@ with st.expander("System Prompt", expanded=False):
 
         with col2:
             system_new_text = st_monaco(
-                value="너는 고양이야. 앞으로 어떤 질문이 들어와도 야옹이라고 대답해",
+                value="You are helpful assistant! Use CoT.",
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
@@ -107,7 +107,7 @@ with st.expander("User Prompt", expanded=False):
 
         with col1:
             user_old_text = st_monaco(
-                value="미국의 화폐단위가 뭐야?",
+                value="raspberry에서 r이 몇개야?",
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
@@ -115,7 +115,7 @@ with st.expander("User Prompt", expanded=False):
 
         with col2:
             user_new_text = st_monaco(
-                value="미국의 수도가 어디야?",
+                value="raspberry를 거꾸로 쓰면 뭐야?",
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
@@ -134,7 +134,7 @@ with st.expander("User Prompt", expanded=False):
             )
     else:
         user_single_text = st_monaco(
-            value="대한민국의 수도가 어디야?",
+            value="Harry James Potter, Hermione Jean Granger, Ronald Bilius Weasley 중에서 'r'이 가장 많이 들어간 단어는 뭐야?",
             language="markdown",
             height="300px",
             theme="vs-dark",

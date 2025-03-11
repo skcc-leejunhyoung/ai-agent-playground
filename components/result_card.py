@@ -134,7 +134,7 @@ def result_cards(
 
         cards_html += f"""
             <div class="card" onclick="openModal('{modal_id}')">
-                <h4>{title}</h4>
+                <h4 style="color: #61AFEF;">{title}</h4>
                 {html_content}
             </div>
         """
@@ -143,7 +143,7 @@ def result_cards(
             <div id="{modal_id}" class="modal">
                 <div class="modal-content">
                     <span class="close" onclick="closeModal('{modal_id}')">&times;</span>
-                    <h2>{title} 상세 보기</h2>
+                    <h2 style="color: #61AFEF;">{title} 상세 보기</h2>
                     {html_content}
                 </div>
             </div>
