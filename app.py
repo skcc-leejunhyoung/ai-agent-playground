@@ -44,19 +44,26 @@ def generate_uuid():
 
 st.header("Prompt Playground", divider="blue")
 
-header_col1, header_col2 = st.columns([8, 1.3], vertical_alignment="center")
+header_col1, header_col2 = st.columns([8, 1.5], vertical_alignment="center")
 
 with header_col1:
     st.write("_프롬프팅 에이전트를 결합한 playground_")
 
 with header_col2:
     model_count = 2 if st.session_state.get("model_toggle") else 1
-    system_count = 2 if st.session_state.get("system_toggle") else 1
-    user_count = 2 if st.session_state.get("user_toggle") else 1
+    system_count = (
+        len(st.session_state.get("system_prompts", ["dummy"]))
+        if st.session_state.get("system_toggle")
+        else 1
+    )
+    user_count = (
+        len(st.session_state.get("user_prompts", ["dummy"]))
+        if st.session_state.get("user_toggle")
+        else 1
+    )
 
     total_runs = model_count * system_count * user_count
     execute_label = f"**:red[{total_runs} | Execute]**"
-
     execute_button = st.button(execute_label, use_container_width=True)
 
 
