@@ -162,7 +162,7 @@ with st.expander("System Prompt", expanded=False):
                         in available_idx_for_1
                         else 0
                     ),
-                    format_func=lambda x: f"{x+1}",
+                    format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
                     key="system_select_1",
                     label_visibility="collapsed",
                 )
@@ -206,7 +206,7 @@ with st.expander("System Prompt", expanded=False):
                         in available_idx_for_2
                         else 0
                     ),
-                    format_func=lambda x: f"{x+1}",
+                    format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
                     key="system_select_2",
                     label_visibility="collapsed",
                 )
@@ -286,12 +286,58 @@ with st.expander("System Prompt", expanded=False):
             styles=one_dark_pro_styles,
         )
     else:
-        system_single_text = st_monaco(
-            value="You are helpful assistant!",
+        db_system_prompts = get_system_prompts(project_id)
+
+        st.session_state["system_prompts"] = [
+            {"id": row["id"], "prompt": row["prompt"]} for row in db_system_prompts
+        ]
+
+        if "system_single_idx" not in st.session_state:
+            st.session_state["system_single_idx"] = 0
+
+        prompt_count = len(st.session_state["system_prompts"])
+
+        c1, c2 = st.columns([10, 1])
+        with c1:
+            idx = st.selectbox(
+                "System Prompt 선택",
+                options=list(range(prompt_count)),
+                index=st.session_state["system_single_idx"],
+                format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
+                key="system_single_select",
+                label_visibility="collapsed",
+            )
+            st.session_state["system_single_idx"] = idx
+
+        with c2:
+            btn_update_sys = st.button(
+                ":material/save:",
+                key=f"update_system_single_top_{idx}",
+                type="tertiary",
+                use_container_width=True,
+            )
+
+        editor_single = st_monaco(
+            value=st.session_state["system_prompts"][idx]["prompt"],
             language="markdown",
             height="300px",
             theme="vs-dark",
         )
+
+        if editor_single is not None:
+            st.session_state["system_prompts"][idx]["prompt"] = editor_single
+
+        if btn_update_sys:
+            prompt_id = st.session_state["system_prompts"][idx]["id"]
+            prompt_text = st.session_state["system_prompts"][idx]["prompt"]
+
+            if prompt_id:
+                update_system_prompt(prompt_id, prompt_text)
+                st.toast(f"System Prompt updated")
+            else:
+                st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
+
+        system_single_text = st.session_state["system_prompts"][idx]["prompt"]
 
 
 ##########
@@ -333,7 +379,7 @@ with st.expander("User Prompt", expanded=False):
                         if st.session_state["user_select_1_idx"] in available_idx_for_1
                         else 0
                     ),
-                    format_func=lambda x: f"{x+1}",
+                    format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
                     key="user_select_1",
                     label_visibility="collapsed",
                 )
@@ -370,7 +416,7 @@ with st.expander("User Prompt", expanded=False):
                         if st.session_state["user_select_2_idx"] in available_idx_for_2
                         else 0
                     ),
-                    format_func=lambda x: f"{x+1}",
+                    format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
                     key="user_select_2",
                     label_visibility="collapsed",
                 )
@@ -398,7 +444,7 @@ with st.expander("User Prompt", expanded=False):
                         len(st.session_state["user_prompts"]) - 1
                     )
                     st.rerun()
-            with c3:
+            with c4:
                 if st.button(
                     ":material/remove:",
                     type="tertiary",
@@ -449,12 +495,59 @@ with st.expander("User Prompt", expanded=False):
             styles=one_dark_pro_styles,
         )
     else:
-        user_single_text = st_monaco(
-            value="Harry James Potter, Hermione Jean Granger, Ronald Bilius Weasley 중에서 'r'이 가장 많이 들어간 단어는 뭐야?",
+        db_user_prompts = get_user_prompts(project_id)
+
+        st.session_state["user_prompts"] = [
+            {"id": row["id"], "prompt": row["prompt"]} for row in db_user_prompts
+        ]
+
+        if "user_single_idx" not in st.session_state:
+            st.session_state["user_single_idx"] = 0
+
+        prompt_count = len(st.session_state["user_prompts"])
+
+        c1, c2 = st.columns([10, 1])
+
+        with c1:
+            idx = st.selectbox(
+                "User Prompt 선택",
+                options=list(range(prompt_count)),
+                index=st.session_state["user_single_idx"],
+                format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
+                key="user_single_select",
+                label_visibility="collapsed",
+            )
+            st.session_state["user_single_idx"] = idx
+
+        with c2:
+            btn_update_usr = st.button(
+                ":material/save:",
+                key=f"update_user_single_top_{idx}",
+                type="tertiary",
+                use_container_width=True,
+            )
+
+        editor_single = st_monaco(
+            value=st.session_state["user_prompts"][idx]["prompt"],
             language="markdown",
             height="300px",
             theme="vs-dark",
         )
+
+        if editor_single is not None:
+            st.session_state["user_prompts"][idx]["prompt"] = editor_single
+
+        if btn_update_usr:
+            prompt_id = st.session_state["user_prompts"][idx]["id"]
+            prompt_text = st.session_state["user_prompts"][idx]["prompt"]
+
+            if prompt_id:
+                update_user_prompt(prompt_id, prompt_text)
+                st.toast(f"User Prompt updated")
+            else:
+                st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
+
+        user_single_text = st.session_state["user_prompts"][idx]["prompt"]
 
 
 ##########
