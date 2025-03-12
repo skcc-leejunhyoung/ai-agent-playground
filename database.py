@@ -144,6 +144,16 @@ def get_system_prompts(project_id):
         return cur.fetchall()
 
 
+def update_system_prompt(prompt_id, new_prompt):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE system_prompt SET prompt = ? WHERE id = ?;",
+            (new_prompt, prompt_id),
+        )
+        conn.commit()
+
+
 ##########
 
 
@@ -172,6 +182,16 @@ def get_user_prompts(project_id):
             (project_id,),
         )
         return cur.fetchall()
+
+
+def update_user_prompt(prompt_id, new_prompt):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE user_prompt SET prompt = ? WHERE id = ?;",
+            (new_prompt, prompt_id),
+        )
+        conn.commit()
 
 
 ##########

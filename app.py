@@ -1,10 +1,7 @@
-# app.py
-
 import streamlit as st
 from st_diff_viewer import diff_viewer
 from streamlit_monaco import st_monaco
 import uuid
-import json
 
 from model import stream_chat
 from components.result_card import result_cards
@@ -19,8 +16,9 @@ from database import (
     add_model,
     get_models,
     add_result,
+    update_system_prompt,
+    update_user_prompt,
 )
-
 
 ##########
 
@@ -58,7 +56,6 @@ def generate_uuid():
 
 ##########
 
-
 st.header("Prompt Playground", divider="blue")
 
 header_col1, header_col2 = st.columns([8, 1.5], vertical_alignment="center")
@@ -85,7 +82,6 @@ with header_col2:
 
 
 ##########
-
 
 with st.sidebar:
     st.header("Project Management")
@@ -121,7 +117,6 @@ with st.sidebar:
 
 ##########
 
-
 with st.expander("System Prompt", expanded=False):
     system_compare_toggle = st.toggle("다중 System Prompt 활성화", key="system_toggle")
     if system_compare_toggle:
@@ -154,29 +149,51 @@ with st.expander("System Prompt", expanded=False):
 
         col1, col2 = st.columns(2)
         with col1:
-            idx_1 = st.selectbox(
-                "sys 1 선택",
-                options=available_idx_for_1,
-                index=(
-                    available_idx_for_1.index(st.session_state["system_select_1_idx"])
-                    if st.session_state["system_select_1_idx"] in available_idx_for_1
-                    else 0
-                ),
-                format_func=lambda x: f"{x+1}",
-                key="system_select_1",
-                label_visibility="collapsed",
-            )
-            st.session_state["system_select_1_idx"] = idx_1
+            c1, c2 = st.columns([10, 1])
+            with c1:
+                idx_1 = st.selectbox(
+                    "sys 1 선택",
+                    options=available_idx_for_1,
+                    index=(
+                        available_idx_for_1.index(
+                            st.session_state["system_select_1_idx"]
+                        )
+                        if st.session_state["system_select_1_idx"]
+                        in available_idx_for_1
+                        else 0
+                    ),
+                    format_func=lambda x: f"{x+1}",
+                    key="system_select_1",
+                    label_visibility="collapsed",
+                )
+                st.session_state["system_select_1_idx"] = idx_1
+            with c2:
+                btn_update_sys_1 = st.button(
+                    ":material/save:",
+                    type="tertiary",
+                    use_container_width=True,
+                    key=f"update_sys_{idx_1}_top",
+                )
+
             editor_1 = st_monaco(
                 value=st.session_state["system_prompts"][idx_1]["prompt"],
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
             )
+
             if editor_1 is not None:
                 st.session_state["system_prompts"][idx_1]["prompt"] = editor_1
+
+            if btn_update_sys_1:
+                update_system_prompt(
+                    st.session_state["system_prompts"][idx_1]["id"],
+                    st.session_state["system_prompts"][idx_1]["prompt"],
+                )
+                st.toast("Left System Prompt updated")
+
         with col2:
-            c1, c2, c3 = st.columns([10, 1, 1])
+            c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
             with c1:
                 idx_2 = st.selectbox(
                     "sys 2 선택",
@@ -195,8 +212,15 @@ with st.expander("System Prompt", expanded=False):
                 )
                 st.session_state["system_select_2_idx"] = idx_2
             with c2:
+                editor_2_btn = st.button(
+                    ":material/save:",
+                    type="tertiary",
+                    use_container_width=True,
+                    key=f"update_sys_{idx_2}_top",
+                )
+            with c3:
                 if st.button(
-                    "➕",
+                    ":material/add:",
                     type="tertiary",
                     use_container_width=True,
                     key="add_system_prompt",
@@ -210,9 +234,9 @@ with st.expander("System Prompt", expanded=False):
                         len(st.session_state["system_prompts"]) - 1
                     )
                     st.rerun()
-            with c3:
+            with c4:
                 if st.button(
-                    "➖",
+                    ":material/remove:",
                     type="tertiary",
                     use_container_width=True,
                     key="remove_system_prompt",
@@ -237,6 +261,7 @@ with st.expander("System Prompt", expanded=False):
                                 st.session_state["system_select_2_idx"] + 1
                             ) % new_len
                         st.rerun()
+
             editor_2 = st_monaco(
                 value=st.session_state["system_prompts"][idx_2]["prompt"],
                 language="markdown",
@@ -245,6 +270,13 @@ with st.expander("System Prompt", expanded=False):
             )
             if editor_2 is not None:
                 st.session_state["system_prompts"][idx_2]["prompt"] = editor_2
+
+            if editor_2_btn:
+                update_system_prompt(
+                    st.session_state["system_prompts"][idx_2]["id"],
+                    st.session_state["system_prompts"][idx_2]["prompt"],
+                )
+                st.toast("Right System Prompt updated")
         split_view_sys = st.toggle("Split View", value=True, key="system_split_view")
         diff_viewer(
             st.session_state["system_prompts"][idx_1]["prompt"],
@@ -291,19 +323,28 @@ with st.expander("User Prompt", expanded=False):
 
         col1, col2 = st.columns(2)
         with col1:
-            idx_1 = st.selectbox(
-                "usr 1 선택",
-                options=available_idx_for_1,
-                index=(
-                    available_idx_for_1.index(st.session_state["user_select_1_idx"])
-                    if st.session_state["user_select_1_idx"] in available_idx_for_1
-                    else 0
-                ),
-                format_func=lambda x: f"{x+1}",
-                key="user_select_1",
-                label_visibility="collapsed",
-            )
-            st.session_state["user_select_1_idx"] = idx_1
+            c1, c2 = st.columns([10, 1])
+            with c1:
+                idx_1 = st.selectbox(
+                    "usr 1 선택",
+                    options=available_idx_for_1,
+                    index=(
+                        available_idx_for_1.index(st.session_state["user_select_1_idx"])
+                        if st.session_state["user_select_1_idx"] in available_idx_for_1
+                        else 0
+                    ),
+                    format_func=lambda x: f"{x+1}",
+                    key="user_select_1",
+                    label_visibility="collapsed",
+                )
+                st.session_state["user_select_1_idx"] = idx_1
+            with c2:
+                btn_update_usr_1 = st.button(
+                    ":material/save:",
+                    type="tertiary",
+                    use_container_width=True,
+                    key=f"update_usr_{idx_1}_top",
+                )
             editor_1 = st_monaco(
                 value=st.session_state["user_prompts"][idx_1]["prompt"],
                 language="markdown",
@@ -312,8 +353,14 @@ with st.expander("User Prompt", expanded=False):
             )
             if editor_1 is not None:
                 st.session_state["user_prompts"][idx_1]["prompt"] = editor_1
+            if btn_update_usr_1:
+                update_user_prompt(
+                    st.session_state["user_prompts"][idx_1]["id"],
+                    st.session_state["user_prompts"][idx_1]["prompt"],
+                )
+                st.toast("Left User Prompt updated")
         with col2:
-            c1, c2, c3 = st.columns([10, 1, 1])
+            c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
             with c1:
                 idx_2 = st.selectbox(
                     "usr 2 선택",
@@ -329,8 +376,15 @@ with st.expander("User Prompt", expanded=False):
                 )
                 st.session_state["user_select_2_idx"] = idx_2
             with c2:
+                editor_2_btn = st.button(
+                    ":material/save:",
+                    type="tertiary",
+                    use_container_width=True,
+                    key=f"update_usr_{idx_2}_top",
+                )
+            with c3:
                 if st.button(
-                    "➕",
+                    ":material/add:",
                     type="tertiary",
                     use_container_width=True,
                     key="add_user_prompt",
@@ -346,7 +400,7 @@ with st.expander("User Prompt", expanded=False):
                     st.rerun()
             with c3:
                 if st.button(
-                    "➖",
+                    ":material/remove:",
                     type="tertiary",
                     use_container_width=True,
                     key="remove_user_prompt",
@@ -371,6 +425,7 @@ with st.expander("User Prompt", expanded=False):
                                 st.session_state["user_select_2_idx"] + 1
                             ) % new_len
                         st.rerun()
+
             editor_2 = st_monaco(
                 value=st.session_state["user_prompts"][idx_2]["prompt"],
                 language="markdown",
@@ -379,7 +434,12 @@ with st.expander("User Prompt", expanded=False):
             )
             if editor_2 is not None:
                 st.session_state["user_prompts"][idx_2]["prompt"] = editor_2
-
+            if editor_2_btn:
+                update_user_prompt(
+                    st.session_state["user_prompts"][idx_2]["id"],
+                    st.session_state["user_prompts"][idx_2]["prompt"],
+                )
+                st.toast("Right User Prompt updated")
         split_view_usr = st.toggle("Split View", value=True, key="user_split_view")
         diff_viewer(
             st.session_state["user_prompts"][idx_1]["prompt"],
@@ -500,7 +560,7 @@ if execute_button:
                     project_id,
                 )
                 toast_msg.toast(
-                    f"[{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 완료!",
+                    f"[{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 완료!"
                 )
                 current_run += 1
 
