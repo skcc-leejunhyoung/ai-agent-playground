@@ -24,7 +24,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS project (
                 project_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT NOT NULL UNIQUE,
-                current_session_id INTEGER DEFAULT 0
+                current_session_id INTEGER DEFAULT 0,
+                description TEXT DEFAULT ''
             );
         """
         )
@@ -84,14 +85,14 @@ def init_db():
 ##########
 
 
-def create_project(project_name):
+def create_project(project_name, description=""):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO project (project_name) VALUES (?);
+            INSERT INTO project (project_name, description) VALUES (?, ?);
         """,
-            (project_name,),
+            (project_name, description),
         )
         conn.commit()
         return cur.lastrowid

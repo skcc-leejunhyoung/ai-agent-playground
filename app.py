@@ -10,9 +10,7 @@ from database import (
     add_model,
 )
 
-
 ##########
-
 
 init_db()
 
@@ -58,25 +56,6 @@ st.markdown(
             align-items: center;
             font-size: 4rem;
         }
-        /* Modal 스타일 */
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.6);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 9999;
-        }
-        .modal-content {
-            background-color: white;
-            padding: 2rem;
-            border-radius: 10px;
-            width: 50%;
-        }
     </style>
     """,
     unsafe_allow_html=True,
@@ -95,7 +74,7 @@ for proj in projects:
         break
 
 if not default_project:
-    project_id = create_project("default")
+    project_id = create_project("default", "This is auto-generated project.")
     add_system_prompt("You are helpful assistant!", project_id)
     add_system_prompt(
         "You always answer 'meow' regardless of the question.", project_id
@@ -123,13 +102,12 @@ for proj in projects:
     project_name = proj_dict["project_name"]
     project_id = proj_dict["project_id"]
     session_id = proj_dict.get("current_session_id", 0)
+    description = proj_dict.get("description", "")
 
     html_cards += f"""
     <a href="/main_playground?selected_project={project_id}" class="project-card">
-        <h3>{project_name}</h3>
-        <p><strong>ID:</strong> {project_id}</p>
-        <p><strong>세션:</strong> {session_id}</p>
-        <p style="text-align: center;">🚀 클릭하여 선택</p>
+        <h2>{project_name}</h2>
+        <i>{description}</i>
     </a>
     """
 
@@ -139,7 +117,12 @@ html_cards += """
     </a>
 </div>
 """
+
 st.html(html_cards)
+
+
+##########
+
 
 query_params = st.query_params
 if query_params.get("selected_project"):
