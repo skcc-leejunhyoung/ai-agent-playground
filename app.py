@@ -1,11 +1,26 @@
 # app.py
+
 import streamlit as st
 from st_diff_viewer import diff_viewer
 from streamlit_monaco import st_monaco
 import uuid
+import json
 
 from model import stream_chat
 from components.result_card import result_cards
+from database import (
+    init_db,
+    create_project,
+    get_projects,
+    add_system_prompt,
+    get_system_prompts,
+    add_user_prompt,
+    get_user_prompts,
+    add_model,
+    get_models,
+    add_result,
+)
+
 
 ##########
 
@@ -27,6 +42,8 @@ one_dark_pro_styles = {
 }
 
 st.set_page_config(page_title="Prompt Playground", layout="wide")
+
+init_db()
 
 if "results" not in st.session_state:
     st.session_state["results"] = []
@@ -70,14 +87,53 @@ with header_col2:
 ##########
 
 
+with st.sidebar:
+    st.header("Project Management")
+    projects = get_projects()
+    default_project = None
+    for proj in projects:
+        if proj["project_name"] == "default":
+            default_project = proj
+            break
+    if not default_project:
+        project_id = create_project("default")
+        add_system_prompt("You are helpful assistant!", project_id)
+        add_system_prompt(
+            "You always answer 'meow' regardless of the question.", project_id
+        )
+        add_user_prompt("What is the capital of France?", project_id)
+        add_user_prompt("What is the currency of USA?", project_id)
+        add_model("GPT-4o", project_id)
+        add_model("GPT-4o mini", project_id)
+        st.toast("Default 프로젝트가 생성되었습니다.", icon="✨")
+        default_project = {
+            "project_id": project_id,
+            "project_name": "default",
+            "current_session_id": 0,
+        }
+    else:
+        project_id = default_project["project_id"]
+    st.write(
+        f"Selected project: **{default_project['project_name']}** (ID: {project_id})"
+    )
+    st.session_state["project"] = default_project
+
+
+##########
+
+
 with st.expander("System Prompt", expanded=False):
     system_compare_toggle = st.toggle("다중 System Prompt 활성화", key="system_toggle")
-
     if system_compare_toggle:
-        if "system_prompts" not in st.session_state:
-            st.session_state["system_prompts"] = [
-                f"You are helpful assistant! #{generate_uuid()}" for i in range(2)
-            ]
+        db_system_prompts = get_system_prompts(project_id)
+        if "excluded_system_prompt_ids" not in st.session_state:
+            st.session_state["excluded_system_prompt_ids"] = []
+        st.session_state["system_prompts"] = [
+            {"id": row["id"], "prompt": row["prompt"]}
+            for row in db_system_prompts
+            if row["id"] not in st.session_state["excluded_system_prompt_ids"]
+        ]
+
         if "system_select_1_idx" not in st.session_state:
             st.session_state["system_select_1_idx"] = 0
         if "system_select_2_idx" not in st.session_state:
@@ -97,7 +153,6 @@ with st.expander("System Prompt", expanded=False):
         ]
 
         col1, col2 = st.columns(2)
-
         with col1:
             idx_1 = st.selectbox(
                 "sys 1 선택",
@@ -112,19 +167,16 @@ with st.expander("System Prompt", expanded=False):
                 label_visibility="collapsed",
             )
             st.session_state["system_select_1_idx"] = idx_1
-
             editor_1 = st_monaco(
-                value=st.session_state["system_prompts"][idx_1],
+                value=st.session_state["system_prompts"][idx_1]["prompt"],
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
             )
             if editor_1 is not None:
-                st.session_state["system_prompts"][idx_1] = editor_1
-
+                st.session_state["system_prompts"][idx_1]["prompt"] = editor_1
         with col2:
             c1, c2, c3 = st.columns([10, 1, 1])
-
             with c1:
                 idx_2 = st.selectbox(
                     "sys 2 선택",
@@ -142,7 +194,6 @@ with st.expander("System Prompt", expanded=False):
                     label_visibility="collapsed",
                 )
                 st.session_state["system_select_2_idx"] = idx_2
-
             with c2:
                 if st.button(
                     "➕",
@@ -150,14 +201,15 @@ with st.expander("System Prompt", expanded=False):
                     use_container_width=True,
                     key="add_system_prompt",
                 ):
+                    new_prompt = f"You are helpful assistant! #{generate_uuid()}"
+                    new_id = add_system_prompt(new_prompt, project_id)
                     st.session_state["system_prompts"].append(
-                        f"You are helpful assistant! #{generate_uuid()}"
+                        {"id": new_id, "prompt": new_prompt}
                     )
                     st.session_state["system_select_2_idx"] = (
                         len(st.session_state["system_prompts"]) - 1
                     )
                     st.rerun()
-
             with c3:
                 if st.button(
                     "➖",
@@ -167,12 +219,12 @@ with st.expander("System Prompt", expanded=False):
                 ):
                     remove_idx = st.session_state["system_select_2_idx"]
                     if len(st.session_state["system_prompts"]) <= 2:
-                        st.toast(
-                            "시스템 프롬프트는 최소 2개 필요합니다.",
-                            icon="⚠️",
-                        )
+                        st.toast("시스템 프롬프트는 최소 2개 필요합니다.", icon="⚠️")
                     else:
-                        st.session_state["system_prompts"].pop(remove_idx)
+                        removed = st.session_state["system_prompts"].pop(remove_idx)
+                        st.session_state.setdefault(
+                            "excluded_system_prompt_ids", []
+                        ).append(removed["id"])
                         new_len = len(st.session_state["system_prompts"])
                         st.session_state["system_select_2_idx"] = max(
                             0, min(remove_idx, new_len - 1)
@@ -185,26 +237,22 @@ with st.expander("System Prompt", expanded=False):
                                 st.session_state["system_select_2_idx"] + 1
                             ) % new_len
                         st.rerun()
-
             editor_2 = st_monaco(
-                value=st.session_state["system_prompts"][idx_2],
+                value=st.session_state["system_prompts"][idx_2]["prompt"],
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
             )
             if editor_2 is not None:
-                st.session_state["system_prompts"][idx_2] = editor_2
-
+                st.session_state["system_prompts"][idx_2]["prompt"] = editor_2
         split_view_sys = st.toggle("Split View", value=True, key="system_split_view")
-
         diff_viewer(
-            st.session_state["system_prompts"][idx_1],
-            st.session_state["system_prompts"][idx_2],
+            st.session_state["system_prompts"][idx_1]["prompt"],
+            st.session_state["system_prompts"][idx_2]["prompt"],
             split_view=split_view_sys,
             use_dark_theme=True,
             styles=one_dark_pro_styles,
         )
-
     else:
         system_single_text = st_monaco(
             value="You are helpful assistant!",
@@ -219,19 +267,21 @@ with st.expander("System Prompt", expanded=False):
 
 with st.expander("User Prompt", expanded=False):
     user_compare_toggle = st.toggle("다중 User Prompt 활성화", key="user_toggle")
-
     if user_compare_toggle:
-        if "user_prompts" not in st.session_state:
-            st.session_state["user_prompts"] = [
-                f"User Prompt #{generate_uuid()}" for i in range(2)
-            ]
+        db_user_prompts = get_user_prompts(project_id)
+        if "excluded_user_prompt_ids" not in st.session_state:
+            st.session_state["excluded_user_prompt_ids"] = []
+        st.session_state["user_prompts"] = [
+            {"id": row["id"], "prompt": row["prompt"]}
+            for row in db_user_prompts
+            if row["id"] not in st.session_state["excluded_user_prompt_ids"]
+        ]
         if "user_select_1_idx" not in st.session_state:
             st.session_state["user_select_1_idx"] = 0
         if "user_select_2_idx" not in st.session_state:
             st.session_state["user_select_2_idx"] = 1
 
         prompt_count = len(st.session_state["user_prompts"])
-
         available_idx_for_1 = [
             i for i in range(prompt_count) if i != st.session_state["user_select_2_idx"]
         ]
@@ -240,7 +290,6 @@ with st.expander("User Prompt", expanded=False):
         ]
 
         col1, col2 = st.columns(2)
-
         with col1:
             idx_1 = st.selectbox(
                 "usr 1 선택",
@@ -255,19 +304,16 @@ with st.expander("User Prompt", expanded=False):
                 label_visibility="collapsed",
             )
             st.session_state["user_select_1_idx"] = idx_1
-
             editor_1 = st_monaco(
-                value=st.session_state["user_prompts"][idx_1],
+                value=st.session_state["user_prompts"][idx_1]["prompt"],
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
             )
             if editor_1 is not None:
-                st.session_state["user_prompts"][idx_1] = editor_1
-
+                st.session_state["user_prompts"][idx_1]["prompt"] = editor_1
         with col2:
             c1, c2, c3 = st.columns([10, 1, 1])
-
             with c1:
                 idx_2 = st.selectbox(
                     "usr 2 선택",
@@ -282,7 +328,6 @@ with st.expander("User Prompt", expanded=False):
                     label_visibility="collapsed",
                 )
                 st.session_state["user_select_2_idx"] = idx_2
-
             with c2:
                 if st.button(
                     "➕",
@@ -290,14 +335,15 @@ with st.expander("User Prompt", expanded=False):
                     use_container_width=True,
                     key="add_user_prompt",
                 ):
+                    new_prompt = f"User Prompt #{generate_uuid()}"
+                    add_user_prompt(new_prompt, project_id)
                     st.session_state["user_prompts"].append(
-                        f"User Prompt #{generate_uuid()}"
+                        {"id": None, "prompt": new_prompt}
                     )
                     st.session_state["user_select_2_idx"] = (
                         len(st.session_state["user_prompts"]) - 1
                     )
                     st.rerun()
-
             with c3:
                 if st.button(
                     "➖",
@@ -307,12 +353,12 @@ with st.expander("User Prompt", expanded=False):
                 ):
                     remove_idx = st.session_state["user_select_2_idx"]
                     if len(st.session_state["user_prompts"]) <= 2:
-                        st.toast(
-                            "유저 프롬프트는 최소 2개 필요합니다.",
-                            icon="⚠️",
-                        )
+                        st.toast("유저 프롬프트는 최소 2개 필요합니다.", icon="⚠️")
                     else:
-                        st.session_state["user_prompts"].pop(remove_idx)
+                        removed = st.session_state["user_prompts"].pop(remove_idx)
+                        st.session_state.setdefault(
+                            "excluded_user_prompt_ids", []
+                        ).append(removed["id"])
                         new_len = len(st.session_state["user_prompts"])
                         st.session_state["user_select_2_idx"] = max(
                             0, min(remove_idx, new_len - 1)
@@ -325,26 +371,23 @@ with st.expander("User Prompt", expanded=False):
                                 st.session_state["user_select_2_idx"] + 1
                             ) % new_len
                         st.rerun()
-
             editor_2 = st_monaco(
-                value=st.session_state["user_prompts"][idx_2],
+                value=st.session_state["user_prompts"][idx_2]["prompt"],
                 language="markdown",
                 height="300px",
                 theme="vs-dark",
             )
             if editor_2 is not None:
-                st.session_state["user_prompts"][idx_2] = editor_2
+                st.session_state["user_prompts"][idx_2]["prompt"] = editor_2
 
         split_view_usr = st.toggle("Split View", value=True, key="user_split_view")
-
         diff_viewer(
-            st.session_state["user_prompts"][idx_1],
-            st.session_state["user_prompts"][idx_2],
+            st.session_state["user_prompts"][idx_1]["prompt"],
+            st.session_state["user_prompts"][idx_2]["prompt"],
             split_view=split_view_usr,
             use_dark_theme=True,
             styles=one_dark_pro_styles,
         )
-
     else:
         user_single_text = st_monaco(
             value="Harry James Potter, Hermione Jean Granger, Ronald Bilius Weasley 중에서 'r'이 가장 많이 들어간 단어는 뭐야?",
@@ -359,30 +402,32 @@ with st.expander("User Prompt", expanded=False):
 
 with st.expander("Model", expanded=False):
     model_compare_toggle = st.toggle("다중 Model 활성화", key="model_toggle")
-
     if model_compare_toggle:
-        col1, col2 = st.columns(2)
+        db_models = get_models(project_id)
+        st.session_state["model_names"] = [row["model_name"] for row in db_models]
+        if not st.session_state["model_names"]:
+            add_model("GPT-4o", project_id)
+            add_model("GPT-4o mini", project_id)
+            st.session_state["model_names"] = ["GPT-4o", "GPT-4o mini"]
 
+        col1, col2 = st.columns(2)
         with col1:
             model_1 = st.selectbox(
                 "모델 선택 1",
-                ("GPT-4o", "GPT-4o mini"),
+                st.session_state["model_names"],
                 index=0,
                 key="model_selector_1",
                 label_visibility="collapsed",
             )
-
         with col2:
             model_2 = st.selectbox(
                 "모델 선택 2",
-                ("GPT-4o", "GPT-4o mini"),
-                index=1,
+                st.session_state["model_names"],
+                index=1 if len(st.session_state["model_names"]) > 1 else 0,
                 key="model_selector_2",
                 label_visibility="collapsed",
             )
-
         model_list = [model_1, model_2]
-
     else:
         single_model = st.selectbox(
             "모델 선택",
@@ -391,26 +436,35 @@ with st.expander("Model", expanded=False):
             key="model_selector_single",
             label_visibility="collapsed",
         )
-
         model_list = [single_model]
 
 
 ##########
 
+
 if execute_button:
     if system_compare_toggle:
         system_prompts = st.session_state["system_prompts"]
     else:
-        system_prompts = [system_single_text or ""]
+        system_prompts = [{"prompt": system_single_text or ""}]
 
     if user_compare_toggle:
         user_prompts = st.session_state["user_prompts"]
     else:
-        user_prompts = [user_single_text or ""]
+        user_prompts = [{"prompt": user_single_text or ""}]
 
     st.info(
         f"|| 모델: {len(model_list)}개 || 시스템 프롬프트: {len(system_prompts)}개 || 유저 프롬프트: {len(user_prompts)}개 || 조합으로 실행됩니다."
     )
+
+    project_dict = dict(st.session_state["project"])
+    current_session_id = project_dict.get("current_session_id", 0)
+    new_session_id = current_session_id + 1
+    from database import update_project_session_id
+
+    update_project_session_id(project_id, new_session_id)
+    project_dict["current_session_id"] = new_session_id
+    st.session_state["project"] = project_dict
 
     st.session_state["results"] = []
     st.session_state["system_count"] = len(system_prompts)
@@ -420,37 +474,34 @@ if execute_button:
     total_combinations = len(model_list) * len(system_prompts) * len(user_prompts)
     current_run = 1
 
-    toast_msg = st.toast(
-        f"[{current_run}/{total_combinations}] 실행을 시작합니다...", icon="🚀"
-    )
+    toast_msg = st.toast(f"[{current_run}/{total_combinations}] 실행을 시작합니다...")
 
     for model_name in model_list:
         use_gpt4o_mini = model_name == "GPT-4o mini"
-
         for sys_idx, sys_prompt in enumerate(system_prompts, 1):
             for user_idx, user_prompt in enumerate(user_prompts, 1):
                 toast_msg.toast(
-                    f"🚀 [{current_run}/{total_combinations}] {model_name} | "
-                    f"Sys{sys_idx} + User{user_idx} 실행 중..."
+                    f"🚀 [{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 중..."
                 )
-
                 full_response = ""
-
                 for token in stream_chat(
-                    system_prompt=sys_prompt,
-                    user_prompt=user_prompt,
+                    system_prompt=sys_prompt["prompt"],
+                    user_prompt=user_prompt["prompt"],
                     use_gpt4o_mini=use_gpt4o_mini,
                 ):
                     full_response += token
-
                 st.session_state["results"].append(full_response)
-
-                toast_msg.toast(
-                    f"[{current_run}/{total_combinations}] {model_name} | "
-                    f"Sys{sys_idx} + User{user_idx} 실행 완료!",
-                    icon="✅",
+                add_result(
+                    sys_prompt["prompt"],
+                    user_prompt["prompt"],
+                    model_name,
+                    full_response,
+                    new_session_id,
+                    project_id,
                 )
-
+                toast_msg.toast(
+                    f"[{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 완료!",
+                )
                 current_run += 1
 
     toast_msg.toast(f":green[모든 실행이 완료되었습니다!]", icon="🎉")

@@ -1,3 +1,5 @@
+# database.py
+
 import sqlite3
 import json
 from pathlib import Path
@@ -8,7 +10,7 @@ DB_PATH = Path(__file__).parent / "playground.db"
 def get_connection():
     """SQLite DB 연결"""
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Dict처럼 결과 반환
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -17,17 +19,16 @@ def init_db():
     with get_connection() as conn:
         cur = conn.cursor()
 
-        # 프로젝트 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS project (
                 project_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_name TEXT NOT NULL UNIQUE
+                project_name TEXT NOT NULL UNIQUE,
+                current_session_id INTEGER DEFAULT 0
             );
         """
         )
 
-        # 시스템 프롬프트 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS system_prompt (
@@ -39,7 +40,6 @@ def init_db():
         """
         )
 
-        # 유저 프롬프트 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS user_prompt (
@@ -51,7 +51,6 @@ def init_db():
         """
         )
 
-        # 모델 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS model (
@@ -63,7 +62,6 @@ def init_db():
         """
         )
 
-        # 결과 테이블
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS result (
@@ -72,6 +70,7 @@ def init_db():
                 user_prompt TEXT NOT NULL,
                 model TEXT NOT NULL,
                 result TEXT NOT NULL, -- JSON 형태 문자열
+                session_id INTEGER,
                 project_id INTEGER,
                 FOREIGN KEY (project_id) REFERENCES project (project_id)
             );
@@ -79,12 +78,10 @@ def init_db():
         )
 
         conn.commit()
-        print("✅ DB 초기화 완료!")
+        print("[DB initialized]")
 
 
-##############################
-# PROJECT
-##############################
+##########
 
 
 def create_project(project_name):
@@ -107,9 +104,17 @@ def get_projects():
         return cur.fetchall()
 
 
-##############################
-# SYSTEM PROMPT
-##############################
+def update_project_session_id(project_id, new_session_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE project SET current_session_id = ? WHERE project_id = ?;",
+            (new_session_id, project_id),
+        )
+        conn.commit()
+
+
+##########
 
 
 def add_system_prompt(prompt, project_id):
@@ -139,9 +144,7 @@ def get_system_prompts(project_id):
         return cur.fetchall()
 
 
-##############################
-# USER PROMPT
-##############################
+##########
 
 
 def add_user_prompt(prompt, project_id):
@@ -171,9 +174,7 @@ def get_user_prompts(project_id):
         return cur.fetchall()
 
 
-##############################
-# MODEL
-##############################
+##########
 
 
 def add_model(model_name, project_id):
@@ -203,24 +204,23 @@ def get_models(project_id):
         return cur.fetchall()
 
 
-##############################
-# RESULT
-##############################
+##########
 
 
-def add_result(system_prompt, user_prompt, model, result_data, project_id):
+def add_result(system_prompt, user_prompt, model, result_data, session_id, project_id):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO result (system_prompt, user_prompt, model, result, project_id)
-            VALUES (?, ?, ?, ?, ?);
+            INSERT INTO result (system_prompt, user_prompt, model, result, session_id, project_id)
+            VALUES (?, ?, ?, ?, ?, ?);
         """,
             (
                 system_prompt,
                 user_prompt,
                 model,
                 json.dumps(result_data, ensure_ascii=False),
+                session_id,
                 project_id,
             ),
         )
@@ -240,7 +240,6 @@ def get_results(project_id):
         )
         rows = cur.fetchall()
 
-        # JSON 필드 파싱해서 반환
         results = []
         for row in rows:
             item = dict(row)
