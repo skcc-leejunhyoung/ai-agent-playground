@@ -47,8 +47,8 @@ project_id = project["project_id"]
 css = """
 <style>
     [data-testid="stSidebar"][aria-expanded="true"] {
-        min-width: 400px;
-        max-width: calc(100vw - 600px);
+        max-width: calc(100vw - 600px) !important;
+        min-width: 350px;
         width: calc(100vw - 600px);
         background-color: #202833;
     }
