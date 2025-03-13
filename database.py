@@ -63,6 +63,7 @@ def init_db():
         """
         )
 
+        # result 테이블에 새로운 컬럼들 추가
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS result (
@@ -73,6 +74,9 @@ def init_db():
                 result TEXT NOT NULL, -- JSON 형태 문자열
                 session_id INTEGER,
                 project_id INTEGER,
+                eval_pass TEXT DEFAULT 'X',
+                eval_method TEXT DEFAULT '',
+                eval_keyword TEXT DEFAULT '',
                 FOREIGN KEY (project_id) REFERENCES project (project_id)
             );
         """
@@ -268,3 +272,93 @@ def get_results(project_id):
             results.append(item)
 
         return results
+
+
+def get_eval_data(project_id, session_id):
+    """
+    프로젝트와 세션에 해당하는 result의 평가 관련 데이터 가져오기.
+
+    반환값:
+        - 리스트 형태로 반환
+        - 각 원소는 딕셔너리: {
+            "id": result_id,
+            "eval_pass": "O" 또는 "X",
+            "eval_method": 평가 방법,
+            "eval_keyword": 평가 키워드 리스트 (쉼표 구분 문자열)
+        }
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, eval_pass, eval_method, eval_keyword
+            FROM result
+            WHERE project_id = ? AND session_id = ?
+        """,
+            (project_id, session_id),
+        )
+
+        rows = cur.fetchall()
+
+        results = []
+        for row in rows:
+            results.append(
+                {
+                    "id": row["id"],
+                    "eval_pass": row["eval_pass"],
+                    "eval_method": row["eval_method"],
+                    "eval_keyword": row["eval_keyword"],
+                }
+            )
+
+    print(
+        f"[DB] 프로젝트 {project_id}, 세션 {session_id} 평가 데이터 {len(results)}건 조회 완료"
+    )
+    return results
+
+
+def update_eval_data(result_id, eval_pass=None, eval_method=None, eval_keyword=None):
+    """
+    개별 result_id에 대한 평가 데이터 업데이트.
+
+    매개변수:
+        - result_id (int): 업데이트할 대상 result ID
+        - eval_pass (str | None): "O" 또는 "X" (None이면 변경 안함)
+        - eval_method (str | None): 평가 방식 (None이면 변경 안함)
+        - eval_keyword (str | None): 평가에 사용된 키워드 (None이면 변경 안함)
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        # 업데이트할 필드와 값 생성
+        fields = []
+        values = []
+
+        if eval_pass is not None:
+            fields.append("eval_pass = ?")
+            values.append(eval_pass)
+
+        if eval_method is not None:
+            fields.append("eval_method = ?")
+            values.append(eval_method)
+
+        if eval_keyword is not None:
+            fields.append("eval_keyword = ?")
+            values.append(eval_keyword)
+
+        if not fields:
+            print(f"[DB] 업데이트할 필드가 없습니다. result_id={result_id}")
+            return
+
+        values.append(result_id)
+
+        # SQL 실행
+        sql = f"""
+            UPDATE result
+            SET {', '.join(fields)}
+            WHERE id = ?
+        """
+        cur.execute(sql, values)
+        conn.commit()
+
+    print(f"[DB] result_id={result_id} 평가 데이터 업데이트 완료")

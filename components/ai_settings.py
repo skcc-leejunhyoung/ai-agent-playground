@@ -7,12 +7,8 @@ import uuid
 import time
 
 from model import stream_chat
-from components.result_card import result_cards
 
 from database import (
-    init_db,
-    create_project,
-    get_projects,
     add_system_prompt,
     get_system_prompts,
     add_user_prompt,
