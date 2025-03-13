@@ -22,9 +22,29 @@ from database import (
     update_user_prompt,
 )
 
-########## 초기화 및 설정 ##########
+
+##########
+
+
 st.set_page_config(page_title="Prompt Playground", layout="wide")
 init_db()
+
+one_dark_pro_styles = {
+    "variables": {
+        "dark": {
+            "diffViewerBackground": "#282C34",
+            "diffViewerColor": "#ABB2BF",
+            "addedBackground": "#31392b",
+            "addedColor": "#98C379",
+            "removedBackground": "#3b282c",
+            "removedColor": "#E06C75",
+            "wordAddedBackground": "#264F78",
+            "wordRemovedBackground": "#8B0000",
+            "addedGutterBackground": "#31392b",
+            "removedGutterBackground": "#3b282c",
+        }
+    }
+}
 
 if "results" not in st.session_state:
     st.session_state["results"] = []
@@ -33,11 +53,13 @@ if "results" not in st.session_state:
     st.session_state["model_names"] = []
 
 
+##########
+
+
 def generate_uuid():
     return str(uuid.uuid4().int)[:18]
 
 
-# 쿼리 파라미터 확인 후, 세션에 프로젝트 정보 저장 (선택 페이지에서 전달된 경우)
 query_params = st.query_params
 if "project" not in st.session_state and query_params.get("selected_project"):
     projects = get_projects()
@@ -48,7 +70,6 @@ if "project" not in st.session_state and query_params.get("selected_project"):
     if selected_project:
         st.session_state["project"] = selected_project
 
-# 프로젝트 정보가 없으면 오류 출력
 if "project" not in st.session_state:
     st.error("프로젝트가 선택되지 않았습니다. 프로젝트 선택 페이지로 돌아가세요.")
     st.stop()
@@ -56,7 +77,10 @@ if "project" not in st.session_state:
 project = st.session_state["project"]
 project_id = project["project_id"]
 
-########## UI 출력 ##########
+
+##########
+
+
 st.header("Prompt Playground", divider="blue")
 
 header_col1, header_col2 = st.columns([8, 1.5], vertical_alignment="center")
@@ -80,7 +104,10 @@ with header_col2:
     execute_label = f"**:red[{total_runs} | Execute]**"
     execute_button = st.button(execute_label, use_container_width=True)
 
-########## System Prompt 관련 UI ##########
+
+##########
+
+
 with st.expander("System Prompt", expanded=False):
     system_compare_toggle = st.toggle("다중 System Prompt 활성화", key="system_toggle")
     if system_compare_toggle:
