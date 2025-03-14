@@ -318,7 +318,12 @@ def ai_settings_ui(project_id):
                 if "excluded_user_prompt_ids" not in st.session_state:
                     st.session_state["excluded_user_prompt_ids"] = []
                 st.session_state["user_prompts"] = [
-                    {"id": row["id"], "prompt": row["prompt"]}
+                    {
+                        "id": row["id"],
+                        "prompt": row["prompt"],
+                        "eval_method": row["eval_method"],
+                        "eval_keyword": row["eval_keyword"],
+                    }
                     for row in db_user_prompts
                     if row["id"] not in st.session_state["excluded_user_prompt_ids"]
                 ]
@@ -364,6 +369,7 @@ def ai_settings_ui(project_id):
                             use_container_width=True,
                             key=f"update_usr_{idx_1}_top",
                         )
+
                     editor_1 = st_monaco(
                         value=st.session_state["user_prompts"][idx_1]["prompt"],
                         language="markdown",
@@ -372,12 +378,7 @@ def ai_settings_ui(project_id):
                     )
                     if editor_1 is not None:
                         st.session_state["user_prompts"][idx_1]["prompt"] = editor_1
-                    if btn_update_usr_1:
-                        update_user_prompt(
-                            st.session_state["user_prompts"][idx_1]["id"],
-                            st.session_state["user_prompts"][idx_1]["prompt"],
-                        )
-                        st.toast("Left User Prompt updated")
+
                 with col2:
                     c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
                     with c1:
@@ -398,7 +399,7 @@ def ai_settings_ui(project_id):
                         )
                         st.session_state["user_select_2_idx"] = idx_2
                     with c2:
-                        editor_2_btn = st.button(
+                        btn_update_usr_2 = st.button(
                             ":material/save:",
                             type="tertiary",
                             use_container_width=True,
@@ -459,12 +460,7 @@ def ai_settings_ui(project_id):
                     )
                     if editor_2 is not None:
                         st.session_state["user_prompts"][idx_2]["prompt"] = editor_2
-                    if editor_2_btn:
-                        update_user_prompt(
-                            st.session_state["user_prompts"][idx_2]["id"],
-                            st.session_state["user_prompts"][idx_2]["prompt"],
-                        )
-                        st.toast("Right User Prompt updated")
+
                 split_view_usr = st.toggle(
                     "Split View", value=True, key="user_split_view"
                 )
@@ -475,10 +471,116 @@ def ai_settings_ui(project_id):
                     use_dark_theme=True,
                     styles=one_dark_pro_styles,
                 )
+                col1, col2 = st.columns(2)
+                with col1:
+                    method_options = ["pass", "rule"]
+                    current_method = (
+                        st.session_state["user_prompts"][idx_1].get("eval_method")
+                        or "pass"
+                    )
+                    current_keyword = (
+                        st.session_state["user_prompts"][idx_1].get("eval_keyword")
+                        or ""
+                    )
+                    eval_method_1 = st.segmented_control(
+                        "평가 방법 선택 (eval_method)",
+                        options=method_options,
+                        default=(
+                            current_method
+                            if current_method in method_options
+                            else method_options[0]
+                        ),
+                        key=f"user_eval_method_select_1_{idx_1}",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state["user_prompts"][idx_1][
+                        "eval_method"
+                    ] = eval_method_1
+                    if eval_method_1 == "rule":
+                        eval_keyword_1 = st.text_area(
+                            "평가 keyword 입력",
+                            height=68,
+                            value=current_keyword,
+                            key=f"user_eval_keyword_1_{idx_1}",
+                            label_visibility="collapsed",
+                        )
+                        st.session_state["user_prompts"][idx_1][
+                            "eval_keyword"
+                        ] = eval_keyword_1
+
+                    if btn_update_usr_1:
+                        update_user_prompt(
+                            st.session_state["user_prompts"][idx_1]["id"],
+                            new_prompt=st.session_state["user_prompts"][idx_1][
+                                "prompt"
+                            ],
+                            eval_method=st.session_state["user_prompts"][idx_1][
+                                "eval_method"
+                            ],
+                            eval_keyword=st.session_state["user_prompts"][idx_1][
+                                "eval_keyword"
+                            ],
+                        )
+                        st.toast("Left User Prompt updated")
+                with col2:
+                    method_options = ["pass", "rule"]
+                    current_method = (
+                        st.session_state["user_prompts"][idx_2].get("eval_method")
+                        or "pass"
+                    )
+                    current_keyword = (
+                        st.session_state["user_prompts"][idx_2].get("eval_keyword")
+                        or ""
+                    )
+                    eval_method_2 = st.segmented_control(
+                        "평가 방법 선택 (eval_method)",
+                        options=method_options,
+                        default=(
+                            current_method
+                            if current_method in method_options
+                            else method_options[0]
+                        ),
+                        key=f"user_eval_method_select_2_{idx_2}",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state["user_prompts"][idx_2][
+                        "eval_method"
+                    ] = eval_method_2
+                    if eval_method_2 == "rule":
+                        eval_keyword_2 = st.text_area(
+                            "평가 keyword 입력",
+                            value=current_keyword,
+                            height=68,
+                            key=f"user_eval_keyword_2_{idx_2}",
+                            label_visibility="collapsed",
+                        )
+                        st.session_state["user_prompts"][idx_2][
+                            "eval_keyword"
+                        ] = eval_keyword_2
+
+                    if btn_update_usr_2:
+                        update_user_prompt(
+                            st.session_state["user_prompts"][idx_2]["id"],
+                            new_prompt=st.session_state["user_prompts"][idx_2][
+                                "prompt"
+                            ],
+                            eval_method=st.session_state["user_prompts"][idx_2][
+                                "eval_method"
+                            ],
+                            eval_keyword=st.session_state["user_prompts"][idx_2][
+                                "eval_keyword"
+                            ],
+                        )
+                        st.toast("Right User Prompt updated")
             else:
                 db_user_prompts = get_user_prompts(project_id)
                 st.session_state["user_prompts"] = [
-                    {"id": row["id"], "prompt": row["prompt"]}
+                    {
+                        "id": row["id"],
+                        "prompt": row["prompt"],
+                        "eval_method": row["eval_method"],
+                        "eval_keyword": row["eval_keyword"],
+                    }
                     for row in db_user_prompts
                 ]
                 if "user_single_idx" not in st.session_state:
@@ -510,14 +612,52 @@ def ai_settings_ui(project_id):
                 )
                 if editor_single is not None:
                     st.session_state["user_prompts"][idx]["prompt"] = editor_single
+
+                method_options = ["pass", "rule"]
+                current_method = (
+                    st.session_state["user_prompts"][idx].get("eval_method") or "pass"
+                )
+                current_keyword = (
+                    st.session_state["user_prompts"][idx].get("eval_keyword") or ""
+                )
+                eval_method_single = st.segmented_control(
+                    "평가 방법 선택 (eval_method)",
+                    options=method_options,
+                    default=(
+                        current_method
+                        if current_method in method_options
+                        else method_options[0]
+                    ),
+                    key=f"user_eval_method_select_single_{idx}",
+                    label_visibility="collapsed",
+                )
+                st.session_state["user_prompts"][idx][
+                    "eval_method"
+                ] = eval_method_single
+                if eval_method_single == "rule":
+                    eval_keyword_single = st.text_area(
+                        "평가 keyword 입력",
+                        height=68,
+                        value=current_keyword,
+                        key=f"user_eval_keyword_single_{idx}",
+                        label_visibility="collapsed",
+                    )
+                    st.session_state["user_prompts"][idx][
+                        "eval_keyword"
+                    ] = eval_keyword_single
+
                 if btn_update_usr:
-                    prompt_id = st.session_state["user_prompts"][idx]["id"]
-                    prompt_text = st.session_state["user_prompts"][idx]["prompt"]
-                    if prompt_id:
-                        update_user_prompt(prompt_id, prompt_text)
-                        st.toast("User Prompt updated")
-                    else:
-                        st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
+                    update_user_prompt(
+                        st.session_state["user_prompts"][idx]["id"],
+                        new_prompt=st.session_state["user_prompts"][idx]["prompt"],
+                        eval_method=st.session_state["user_prompts"][idx][
+                            "eval_method"
+                        ],
+                        eval_keyword=st.session_state["user_prompts"][idx].get(
+                            "eval_keyword", ""
+                        ),
+                    )
+                    st.toast("User Prompt updated")
                 user_single_text = st.session_state["user_prompts"][idx]["prompt"]
 
         ##########

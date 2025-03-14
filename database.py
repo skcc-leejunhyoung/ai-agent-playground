@@ -47,6 +47,8 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 prompt TEXT NOT NULL,
                 project_id INTEGER,
+                eval_method TEXT DEFAULT 'pass',
+                eval_keyword TEXT DEFAULT '',
                 FOREIGN KEY (project_id) REFERENCES project (project_id)
             );
         """
@@ -63,7 +65,6 @@ def init_db():
         """
         )
 
-        # result 테이블에 새로운 컬럼들 추가
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS result (
@@ -71,7 +72,7 @@ def init_db():
                 system_prompt TEXT NOT NULL,
                 user_prompt TEXT NOT NULL,
                 model TEXT NOT NULL,
-                result TEXT NOT NULL, -- JSON 형태 문자열
+                result TEXT NOT NULL,
                 session_id INTEGER,
                 project_id INTEGER,
                 eval_pass TEXT DEFAULT 'X',
@@ -162,15 +163,15 @@ def update_system_prompt(prompt_id, new_prompt):
 ##########
 
 
-def add_user_prompt(prompt, project_id):
+def add_user_prompt(prompt, project_id, eval_method="pass", eval_keyword=""):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO user_prompt (prompt, project_id)
-            VALUES (?, ?);
+            INSERT INTO user_prompt (prompt, project_id, eval_method, eval_keyword)
+            VALUES (?, ?, ?, ?);
         """,
-            (prompt, project_id),
+            (prompt, project_id, eval_method, eval_keyword),
         )
         conn.commit()
         return cur.lastrowid
@@ -181,7 +182,8 @@ def get_user_prompts(project_id):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT * FROM user_prompt
+            SELECT id, prompt, eval_method, eval_keyword
+            FROM user_prompt
             WHERE project_id = ?;
         """,
             (project_id,),
@@ -189,14 +191,40 @@ def get_user_prompts(project_id):
         return cur.fetchall()
 
 
-def update_user_prompt(prompt_id, new_prompt):
+def update_user_prompt(prompt_id, new_prompt=None, eval_method=None, eval_keyword=None):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(
-            "UPDATE user_prompt SET prompt = ? WHERE id = ?;",
-            (new_prompt, prompt_id),
-        )
+
+        fields = []
+        values = []
+
+        if new_prompt is not None:
+            fields.append("prompt = ?")
+            values.append(new_prompt)
+
+        if eval_method is not None:
+            fields.append("eval_method = ?")
+            values.append(eval_method)
+
+        if eval_keyword is not None:
+            fields.append("eval_keyword = ?")
+            values.append(eval_keyword)
+
+        if not fields:
+            print(f"[DB] 업데이트할 필드가 없습니다. user_prompt_id={prompt_id}")
+            return
+
+        values.append(prompt_id)
+
+        sql = f"""
+            UPDATE user_prompt
+            SET {', '.join(fields)}
+            WHERE id = ?
+        """
+        cur.execute(sql, values)
         conn.commit()
+
+    print(f"[DB] user_prompt_id={prompt_id} 업데이트 완료")
 
 
 ##########
@@ -330,7 +358,6 @@ def update_eval_data(result_id, eval_pass=None, eval_method=None, eval_keyword=N
     with get_connection() as conn:
         cur = conn.cursor()
 
-        # 업데이트할 필드와 값 생성
         fields = []
         values = []
 
@@ -352,7 +379,6 @@ def update_eval_data(result_id, eval_pass=None, eval_method=None, eval_keyword=N
 
         values.append(result_id)
 
-        # SQL 실행
         sql = f"""
             UPDATE result
             SET {', '.join(fields)}
