@@ -806,7 +806,12 @@ def ai_settings_ui(project_id):
 
             latest_results = get_results_by_project(project_id)
             st.session_state["results"] = [
-                {"result": r["result"], "eval_pass": r["eval_pass"]}
+                {
+                    "result": r["result"],
+                    "eval_pass": r["eval_pass"],
+                    "eval_method": r["eval_method"],
+                    "eval_keyword": r["eval_keyword"],
+                }
                 for r in latest_results
                 if r["session_id"] == new_session_id
             ]

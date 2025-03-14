@@ -2,6 +2,7 @@
 
 import streamlit.components.v1 as components
 import markdown
+import re
 
 
 def result_cards(
@@ -11,17 +12,6 @@ def result_cards(
     model_names: list[str],
     height: int = 300,
 ):
-    """
-    결과 카드 리스트를 렌더링하는 함수 (카드 클릭 시 모달 팝업)
-
-    :param card_contents: 카드에 들어갈 결과 텍스트 리스트
-    :param system_count: 시스템 프롬프트 개수
-    :param user_count: 유저 프롬프트 개수
-    :param model_names: 모델 이름 리스트
-    :param height: 카드 전체 영역 높이
-    """
-
-    # 실행순 정렬
     card_contents = list(reversed(card_contents))
 
     cards_html = """
@@ -82,12 +72,45 @@ def result_cards(
         .modal-content {
             background-color: #2B2B2B;
             color: #ABB2BF;
-            margin: 10% auto;
-            padding: 15px;
+            margin: 5% auto;
+            padding: 20px;
             border: 1px solid #888;
             width: 80%;
             border-radius: 10px;
             position: relative;
+            max-height: 80%;
+            overflow-y: auto;
+        }
+
+        .highlight {
+            font-weight: bold;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .highlight-0 { background-color: #FFD700; color: #000; }
+        .highlight-1 { background-color: #FF8C00; color: #000; }
+        .highlight-2 { background-color: #FF69B4; color: #000; }
+        .highlight-3 { background-color: #1E90FF; color: #fff; }
+        .highlight-4 { background-color: #32CD32; color: #000; }
+
+        .keyword-section {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #333;
+            border: 1px solid #555;
+            border-radius: 8px;
+        }
+
+        .keyword-section h4 {
+            margin-top: 0;
+            color: #61AFEF;
+        }
+
+        .keyword-section p {
+            margin: 0;
+            color: #ABB2BF;
+            font-size: 14px;
         }
 
         .close {
@@ -106,7 +129,6 @@ def result_cards(
             text-decoration: none;
             cursor: pointer;
         }
-
         </style>
 
         <div class="scrolling-wrapper">
@@ -120,6 +142,8 @@ def result_cards(
     for idx, data in enumerate(card_contents, 1):
         content = data.get("result", "")
         eval_pass = data.get("eval_pass", "")
+        eval_method = data.get("eval_method", "")
+        eval_keyword = data.get("eval_keyword", "")
 
         if eval_pass == "O":
             card_bg_color = "#152217"
@@ -128,10 +152,32 @@ def result_cards(
         else:
             card_bg_color = "#21252B"
 
-        html_content = markdown.markdown(content)
+        highlighted_content = content
+
+        keyword_box_html = ""
+        if eval_method == "rule" and eval_keyword:
+            keywords = [kw.strip() for kw in eval_keyword.split(",") if kw.strip()]
+
+            for i, kw in enumerate(keywords):
+                css_class = f"highlight-{i % 5}"
+                highlighted_content = re.sub(
+                    f"({re.escape(kw)})",
+                    rf"<span class='{css_class}'><strong>\1</strong></span>",
+                    highlighted_content,
+                    flags=re.IGNORECASE,
+                )
+
+            keyword_list_html = ", ".join(keywords)
+            keyword_box_html = f"""
+                <div class="keyword-section">
+                    <h4>Eval Keywords</h4>
+                    <p>{keyword_list_html}</p>
+                </div>
+            """
+
+        html_content = markdown.markdown(highlighted_content)
         modal_id = f"modal_{idx}"
 
-        # 모델, 시스템, 유저 인덱스 계산
         model_idx = (idx - 1) // total_per_model
         model_name = (
             model_names[model_idx]
@@ -148,7 +194,7 @@ def result_cards(
             <div class="card" onclick="openModal('{modal_id}')"
                  style="background-color: {card_bg_color};">
                 <h4 style="color: #61AFEF;">{title}</h4>
-                {html_content}
+                {markdown.markdown(content)}
             </div>
         """
 
@@ -157,7 +203,8 @@ def result_cards(
                 <div class="modal-content">
                     <span class="close" onclick="closeModal('{modal_id}')">&times;</span>
                     <h3 style="color: #61AFEF;">{title}</h3>
-                    {html_content}
+                    <div>{html_content}</div>
+                    {keyword_box_html}
                 </div>
             </div>
         """

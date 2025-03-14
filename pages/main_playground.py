@@ -79,7 +79,12 @@ if results_data:
             ]
 
             st.session_state["results"] = [
-                {"result": r["result"], "eval_pass": r["eval_pass"]}
+                {
+                    "result": r["result"],
+                    "eval_pass": r["eval_pass"],
+                    "eval_method": r["eval_method"],
+                    "eval_keyword": r["eval_keyword"],
+                }
                 for r in latest_results
             ]
 
