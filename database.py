@@ -76,7 +76,7 @@ def init_db():
                 session_id INTEGER,
                 project_id INTEGER,
                 eval_pass TEXT DEFAULT 'X',
-                eval_method TEXT DEFAULT '',
+                eval_method TEXT DEFAULT 'pass',
                 eval_keyword TEXT DEFAULT '',
                 FOREIGN KEY (project_id) REFERENCES project (project_id)
             );
@@ -260,46 +260,60 @@ def get_models(project_id):
 ##########
 
 
-def add_result(system_prompt, user_prompt, model, result_data, session_id, project_id):
+def add_result(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    result: str,
+    session_id: int,
+    project_id: int,
+    eval_method: str,
+    eval_keyword: str,
+):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO result (system_prompt, user_prompt, model, result, session_id, project_id)
-            VALUES (?, ?, ?, ?, ?, ?);
-        """,
+            INSERT INTO result
+            (system_prompt, user_prompt, model, result, session_id, project_id, eval_method, eval_keyword)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
             (
                 system_prompt,
                 user_prompt,
                 model,
-                json.dumps(result_data, ensure_ascii=False),
+                result,
                 session_id,
                 project_id,
+                eval_method,
+                eval_keyword,
             ),
         )
         conn.commit()
         return cur.lastrowid
 
 
-def get_results(project_id):
+def get_results_by_project(project_id: int):
+    """
+    프로젝트 ID에 해당하는 모든 result 가져오기 (최신 순 정렬)
+    """
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT * FROM result
-            WHERE project_id = ?;
-        """,
+            SELECT *
+            FROM result
+            WHERE project_id = ?
+            ORDER BY session_id DESC, id DESC
+            """,
             (project_id,),
         )
         rows = cur.fetchall()
 
-        results = []
-        for row in rows:
-            item = dict(row)
-            item["result"] = json.loads(item["result"])
-            results.append(item)
+    return [dict(row) for row in rows]
 
-        return results
+
+##########
 
 
 def get_eval_data(project_id, session_id):

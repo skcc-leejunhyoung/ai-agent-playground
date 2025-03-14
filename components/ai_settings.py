@@ -7,7 +7,7 @@ import uuid
 import time
 
 from model import stream_chat
-
+from agent.eval_agent import run_evaluation
 from database import (
     add_system_prompt,
     get_system_prompts,
@@ -158,7 +158,7 @@ def ai_settings_ui(project_id):
                                 st.rerun()
                     with col2:
                         with st.container():
-                            c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
+                            c1, c2, c3, c4 = st.columns([9, 1, 1, 1])
                             with c1:
                                 idx_2 = st.selectbox(
                                     "sys 2 선택",
@@ -386,7 +386,7 @@ def ai_settings_ui(project_id):
                         st.session_state["user_prompts"][idx_1]["prompt"] = editor_1
 
                 with col2:
-                    c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
+                    c1, c2, c3, c4 = st.columns([9, 1, 1, 1])
                     with c1:
                         idx_2 = st.selectbox(
                             "usr 2 선택",
@@ -720,39 +720,61 @@ def ai_settings_ui(project_id):
                 system_prompts = st.session_state["system_prompts"]
             else:
                 system_prompts = [{"prompt": system_single_text or ""}]
+
             if user_compare_toggle:
                 user_prompts = st.session_state["user_prompts"]
             else:
-                user_prompts = [{"prompt": user_single_text or ""}]
+                user_prompts = [
+                    {
+                        "prompt": user_single_text or "",
+                        "eval_method": st.session_state["user_prompts"][idx].get(
+                            "eval_method", "pass"
+                        ),
+                        "eval_keyword": st.session_state["user_prompts"][idx].get(
+                            "eval_keyword", ""
+                        ),
+                    }
+                ]
+
             st.info(
                 f"|| 모델: {len(model_list)}개 || 시스템 프롬프트: {len(system_prompts)}개 || 유저 프롬프트: {len(user_prompts)}개 || 조합으로 실행됩니다."
             )
+
             project_dict = dict(st.session_state["project"])
             current_session_id = project_dict.get("current_session_id", 0)
             new_session_id = current_session_id + 1
+
             from database import update_project_session_id
 
             update_project_session_id(project_id, new_session_id)
+
             project_dict["current_session_id"] = new_session_id
             st.session_state["project"] = project_dict
+
             st.session_state["results"] = []
             st.session_state["system_count"] = len(system_prompts)
             st.session_state["user_count"] = len(user_prompts)
             st.session_state["model_names"] = model_list
+
             total_combinations = (
                 len(model_list) * len(system_prompts) * len(user_prompts)
             )
+
             current_run = 1
             toast_msg = st.toast(
                 f"[{current_run}/{total_combinations}] 실행을 시작합니다..."
             )
+
             for model_name in model_list:
                 use_gpt4o_mini = model_name == "GPT-4o mini"
+
                 for sys_idx, sys_prompt in enumerate(system_prompts, 1):
                     for user_idx, user_prompt in enumerate(user_prompts, 1):
+
                         toast_msg.toast(
                             f"🚀 [{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 중..."
                         )
+
                         full_response = ""
                         for token in stream_chat(
                             system_prompt=sys_prompt["prompt"],
@@ -760,7 +782,9 @@ def ai_settings_ui(project_id):
                             use_gpt4o_mini=use_gpt4o_mini,
                         ):
                             full_response += token
+
                         st.session_state["results"].append(full_response)
+
                         add_result(
                             sys_prompt["prompt"],
                             user_prompt["prompt"],
@@ -768,11 +792,16 @@ def ai_settings_ui(project_id):
                             full_response,
                             new_session_id,
                             project_id,
+                            eval_method=user_prompt["eval_method"],
+                            eval_keyword=user_prompt["eval_keyword"],
                         )
+
                         toast_msg.toast(
                             f"🚀 [{current_run}/{total_combinations}] {model_name} | Sys{sys_idx} + User{user_idx} 실행 완료!"
                         )
                         current_run += 1
+
+            run_evaluation(project_id, new_session_id)
             toast_msg.toast(f":green[모든 실행이 완료되었습니다!]", icon="🎉")
             time.sleep(1)
             st.rerun()

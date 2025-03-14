@@ -7,6 +7,7 @@ from components.ai_settings import ai_settings_ui
 
 from database import (
     get_projects,
+    get_results_by_project,
 )
 
 
@@ -48,7 +49,7 @@ css = """
 <style>
     [data-testid="stSidebar"][aria-expanded="true"] {
         max-width: calc(100vw - 600px) !important;
-        min-width: 350px;
+        min-width: 380px;
         width: calc(100vw - 600px);
         background-color: #202833;
     }
@@ -66,6 +67,30 @@ st.header("Prompt Playground", divider="blue")
 
 with st.container():
     ai_settings_ui(project_id)
+
+results_data = get_results_by_project(project_id)
+if results_data:
+    with st.container():
+        if st.button("View History", type="tertiary", use_container_width=True):
+            latest_session_id = max(result["session_id"] for result in results_data)
+
+            latest_results = [
+                r for r in results_data if r["session_id"] == latest_session_id
+            ]
+
+            st.session_state["results"] = [r["result"] for r in latest_results]
+            st.session_state["system_count"] = len(
+                set(r["system_prompt"] for r in latest_results)
+            )
+            st.session_state["user_count"] = len(
+                set(r["user_prompt"] for r in latest_results)
+            )
+            st.session_state["model_names"] = list(
+                set(r["model"] for r in latest_results)
+            )
+
+            st.toast(f"Run #{latest_session_id} Results Loaded")
+
 
 if st.session_state["results"]:
     with st.sidebar:

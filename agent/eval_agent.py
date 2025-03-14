@@ -1,30 +1,48 @@
 # agent/eval_agent.py
 
 import json
+import re
 from database import get_eval_data, update_eval_data, get_connection
+
+
+def clean_text(text: str) -> str:
+    """
+    마크다운 및 특수문자 제거 함수
+    - **Bold** -> Bold
+    - 기타 특수문자 제거
+    """
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"[^\w\s]", "", text)
+    return text.strip()
 
 
 def evaluate_response(response: str, keywords: list[str]) -> str:
     """
-    주어진 응답(response)에 키워드가 하나라도 포함되면 'O', 없으면 'X' 반환
+    주어진 응답(response)에 키워드가 모두 포함되면 'O', 하나라도 빠지면 'X' 반환
+    - 대소문자 구분 없음
+    - 특수문자 제거
     """
+    normalized_response = clean_text(response).lower()
+
+    print(f"[CHECK] 정제된 응답 → '{normalized_response}'")
+
     for keyword in keywords:
-        if keyword in response:
-            return "O"
-    return "X"
+        normalized_keyword = keyword.lower().strip()
+        print(f"[CHECK] 키워드 → '{normalized_keyword}'")
+        if normalized_keyword not in normalized_response:
+            print(f"[MISS] '{normalized_keyword}'가 포함되지 않음")
+            return "X"
+
+    return "O"
 
 
-def run_evaluation(
-    project_id: int, session_id: int, keywords: str, method: str = "keyword_match"
-):
+def run_evaluation(project_id: int, session_id: int):
     """
-    특정 프로젝트와 세션의 모든 result에 대해 평가 후 eval_pass, eval_method, eval_keyword 필드 업데이트
+    특정 프로젝트와 세션의 모든 result에 대해 평가 후 eval_pass 필드 업데이트
 
-    매개변수:
-        - project_id: 프로젝트 ID
-        - session_id: 세션 ID
-        - keywords: 평가에 사용할 키워드 문자열 ('<|eot_id|>' 또는 ',' 로 구분)
-        - method: 평가 방법 (기본: "keyword_match")
+    규칙:
+    - eval_method가 'pass'면 무조건 'P'
+    - eval_method가 'rule'이면 eval_keyword 기준으로 result 평가하여 'O' 또는 'X'
     """
     eval_data = get_eval_data(project_id, session_id)
     print(
@@ -33,33 +51,51 @@ def run_evaluation(
 
     for data in eval_data:
         result_id = data["id"]
+
         with get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT result FROM result WHERE id = ?", (result_id,))
+
+            cur.execute(
+                """
+                SELECT result, eval_method, eval_keyword
+                FROM result
+                WHERE id = ?
+                """,
+                (result_id,),
+            )
             row = cur.fetchone()
+
             if row is None:
+                print(f"[SKIP] result_id {result_id} 데이터가 없습니다.")
                 continue
+
             result_content = row["result"]
+            eval_method = row["eval_method"]
+            eval_keyword = row["eval_keyword"]
 
-        try:
-            parsed_result = json.loads(result_content)
-        except json.JSONDecodeError:
-            eval_pass = "X"
-        else:
-            if isinstance(parsed_result, dict):
-                combined_text = " ".join(map(str, parsed_result.values()))
-            elif isinstance(parsed_result, str):
-                combined_text = parsed_result
+        if eval_method == "pass":
+            eval_pass = "P"
+
+        elif eval_method == "rule":
+            if "<|eot_id|>" in eval_keyword:
+                keywords = [
+                    kw.strip() for kw in eval_keyword.split("<|eot_id|>") if kw.strip()
+                ]
             else:
-                combined_text = str(parsed_result)
+                keywords = [kw.strip() for kw in eval_keyword.split(",") if kw.strip()]
 
+            combined_text = result_content
             eval_pass = evaluate_response(combined_text, keywords)
+
+        else:
+            print(f"[WARNING] 알 수 없는 eval_method '{eval_method}' → 기본 'P' 처리")
+            eval_pass = "X"
 
         update_eval_data(
             result_id,
             eval_pass=eval_pass,
-            eval_method=method,
-            eval_keyword=keywords,
+            eval_method=eval_method,
+            eval_keyword=eval_keyword,
         )
 
-    print(f"[EVAL] 프로젝트 {project_id}, 세션 {session_id} 평가 완료!")
+    print(f"[EVAL] 프로젝트 {project_id}, 세션 {session_id} 평가 완료")

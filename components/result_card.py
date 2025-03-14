@@ -143,7 +143,7 @@ def result_cards(
             <div id="{modal_id}" class="modal">
                 <div class="modal-content">
                     <span class="close" onclick="closeModal('{modal_id}')">&times;</span>
-                    <h2 style="color: #61AFEF;">{title} 상세 보기</h2>
+                    <h3 style="color: #61AFEF;">{title}</h3>
                     {html_content}
                 </div>
             </div>
