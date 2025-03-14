@@ -16,6 +16,7 @@ from database import (
     add_model,
     get_models,
     add_result,
+    get_results_by_project,
     update_system_prompt,
     update_user_prompt,
 )
@@ -802,6 +803,14 @@ def ai_settings_ui(project_id):
                         current_run += 1
 
             run_evaluation(project_id, new_session_id)
+
+            latest_results = get_results_by_project(project_id)
+            st.session_state["results"] = [
+                {"result": r["result"], "eval_pass": r["eval_pass"]}
+                for r in latest_results
+                if r["session_id"] == new_session_id
+            ]
+
             toast_msg.toast(f":green[모든 실행이 완료되었습니다!]", icon="🎉")
             time.sleep(1)
             st.rerun()

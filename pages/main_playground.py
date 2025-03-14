@@ -78,7 +78,11 @@ if results_data:
                 r for r in results_data if r["session_id"] == latest_session_id
             ]
 
-            st.session_state["results"] = [r["result"] for r in latest_results]
+            st.session_state["results"] = [
+                {"result": r["result"], "eval_pass": r["eval_pass"]}
+                for r in latest_results
+            ]
+
             st.session_state["system_count"] = len(
                 set(r["system_prompt"] for r in latest_results)
             )

@@ -5,7 +5,7 @@ import markdown
 
 
 def result_cards(
-    card_contents: list[str],
+    card_contents: list[dict],
     system_count: int,
     user_count: int,
     model_names: list[str],
@@ -42,7 +42,6 @@ def result_cards(
 
         .card {
             flex: 0 0 auto;
-            background-color: #21252B;
             color: #ABB2BF;
             border-radius: 10px;
             border: 1px solid #333;
@@ -115,7 +114,17 @@ def result_cards(
     model_count = len(model_names)
     total_per_model = system_count * user_count
 
-    for idx, content in enumerate(card_contents, 1):
+    for idx, data in enumerate(card_contents, 1):
+        content = data.get("result", "")
+        eval_pass = data.get("eval_pass", "")
+
+        if eval_pass == "O":
+            card_bg_color = "#153117"
+        elif eval_pass == "X":
+            card_bg_color = "#321516"
+        else:
+            card_bg_color = "#21252B"
+
         html_content = markdown.markdown(content)
         modal_id = f"modal_{idx}"
 
@@ -133,7 +142,8 @@ def result_cards(
         title = f"{model_name} + Sys{sys_num} + User{user_num}"
 
         cards_html += f"""
-            <div class="card" onclick="openModal('{modal_id}')">
+            <div class="card" onclick="openModal('{modal_id}')"
+                 style="background-color: {card_bg_color};">
                 <h4 style="color: #61AFEF;">{title}</h4>
                 {html_content}
             </div>
