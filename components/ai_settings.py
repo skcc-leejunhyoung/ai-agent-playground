@@ -737,8 +737,8 @@ def ai_settings_ui(project_id):
                     }
                 ]
 
-            st.info(
-                f"|| 모델: {len(model_list)}개 || 시스템 프롬프트: {len(system_prompts)}개 || 유저 프롬프트: {len(user_prompts)}개 || 조합으로 실행됩니다."
+            st.toast(
+                f"|| Model: {len(model_list)}개 || system_prompt: {len(system_prompts)}개 || user_prompt: {len(user_prompts)}개 ||"
             )
 
             project_dict = dict(st.session_state["project"])
