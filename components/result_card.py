@@ -21,6 +21,9 @@ def result_cards(
     :param height: 카드 전체 영역 높이
     """
 
+    # 실행순 정렬
+    card_contents = list(reversed(card_contents))
+
     cards_html = """
         <style>
         body, html {
@@ -119,7 +122,7 @@ def result_cards(
         eval_pass = data.get("eval_pass", "")
 
         if eval_pass == "O":
-            card_bg_color = "#153117"
+            card_bg_color = "#152217"
         elif eval_pass == "X":
             card_bg_color = "#321516"
         else:
