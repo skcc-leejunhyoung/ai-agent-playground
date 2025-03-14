@@ -154,6 +154,8 @@ def ai_settings_ui(project_id):
                                     st.session_state["system_prompts"][idx_1]["prompt"],
                                 )
                                 st.toast("Left System Prompt updated")
+                                time.sleep(0.7)
+                                st.rerun()
                     with col2:
                         with st.container():
                             c1, c2, c3, c4 = st.columns([15, 1, 1, 1])
@@ -252,6 +254,8 @@ def ai_settings_ui(project_id):
                                     st.session_state["system_prompts"][idx_2]["prompt"],
                                 )
                                 st.toast("Right System Prompt updated")
+                                time.sleep(0.7)
+                                st.rerun()
                     split_view_sys = st.toggle(
                         "Split View", value=True, key="system_split_view"
                     )
@@ -303,6 +307,8 @@ def ai_settings_ui(project_id):
                     if prompt_id:
                         update_system_prompt(prompt_id, prompt_text)
                         st.toast("System Prompt updated")
+                        time.sleep(0.7)
+                        st.rerun()
                     else:
                         st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
                 system_single_text = st.session_state["system_prompts"][idx]["prompt"]
@@ -522,6 +528,8 @@ def ai_settings_ui(project_id):
                             ],
                         )
                         st.toast("Left User Prompt updated")
+                        time.sleep(0.7)
+                        st.rerun()
                 with col2:
                     method_options = ["pass", "rule"]
                     current_method = (
@@ -572,6 +580,8 @@ def ai_settings_ui(project_id):
                             ],
                         )
                         st.toast("Right User Prompt updated")
+                        time.sleep(0.7)
+                        st.rerun()
             else:
                 db_user_prompts = get_user_prompts(project_id)
                 st.session_state["user_prompts"] = [
@@ -658,6 +668,8 @@ def ai_settings_ui(project_id):
                         ),
                     )
                     st.toast("User Prompt updated")
+                    time.sleep(0.7)
+                    st.rerun()
                 user_single_text = st.session_state["user_prompts"][idx]["prompt"]
 
         ##########
