@@ -85,7 +85,7 @@ def init_db():
         )
 
         conn.commit()
-        print("[DB initialized]")
+        print("[DB] initialized")
 
 
 ##########

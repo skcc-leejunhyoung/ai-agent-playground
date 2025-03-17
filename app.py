@@ -290,6 +290,8 @@ if st.session_state.get("task_state") == "new_project":
             st.session_state.task_state = None
             time.sleep(0.5)
             st.rerun()
+        else:
+            st.toast(f"'{new_project_name}' 프로젝트가 이미 존재합니다.", icon="⚠️")
 
 
 if st.session_state.get("task_state") == "upload_csv":
@@ -303,19 +305,33 @@ if st.session_state.get("task_state") == "upload_csv":
             submit_button = st.form_submit_button("프로젝트 생성 및 CSV 가져오기")
 
             if submit_button:
-                csv_io = io.StringIO(file_content.decode("utf-8"))
-                project_id = import_project_csv(
-                    csv_io,
-                    new_project_name,
-                    new_project_description,
+                existing_project = next(
+                    (
+                        dict(p)
+                        for p in projects
+                        if p["project_name"] == new_project_name
+                    ),
+                    None,
                 )
 
-                st.toast(f"'{new_project_name}' 프로젝트가 생성되었습니다!")
-                st.session_state.add_card_state = False
-                st.session_state.task_state = None
-                st.session_state.uploaded_file_content = None
-                time.sleep(0.5)
-                st.rerun()
+                if not existing_project:
+                    csv_io = io.StringIO(file_content.decode("utf-8"))
+                    project_id = import_project_csv(
+                        csv_io,
+                        new_project_name,
+                        new_project_description,
+                    )
+
+                    st.toast(f"'{new_project_name}' 프로젝트가 생성되었습니다!")
+                    st.session_state.add_card_state = False
+                    st.session_state.task_state = None
+                    st.session_state.uploaded_file_content = None
+                    time.sleep(0.5)
+                    st.rerun()
+                else:
+                    st.toast(
+                        f"'{new_project_name}' 프로젝트가 이미 존재합니다.", icon="⚠️"
+                    )
 
 
 if st.session_state.get("task_state") == "delete_project":

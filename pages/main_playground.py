@@ -118,8 +118,22 @@ if results_data:
 
             st.toast(f"Run #{latest_session_id} Results Loaded")
 else:
-    if st.button("Back to Project Select", type="tertiary", use_container_width=True):
-        st.switch_page("app.py")
+    csv_data = export_project_csv(project_id)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button(
+            "Back to Project Select", type="tertiary", use_container_width=True
+        ):
+            st.switch_page("app.py")
+    with col2:
+        st.download_button(
+            label="Export CSV",
+            data=csv_data,
+            file_name=f"{st.session_state['project']['project_name']}_export.csv",
+            mime="text/csv",
+            type="tertiary",
+            use_container_width=True,
+        )
 
 
 if st.session_state["results"]:
