@@ -60,7 +60,7 @@ def ai_settings_ui(project_id):
     with st.container():
         header_col1, header_col2 = st.columns([2, 1], vertical_alignment="center")
         with header_col1:
-            st.write("_프롬프팅 에이전트를 결합한 playground_")
+            st.write("_프롬프팅 Agent를 결합한 playground_")
 
         with header_col2:
             model_count = 2 if st.session_state.get("model_toggle") else 1
@@ -793,6 +793,7 @@ def ai_settings_ui(project_id):
                             full_response,
                             new_session_id,
                             project_id,
+                            "X",
                             eval_method=user_prompt["eval_method"],
                             eval_keyword=user_prompt["eval_keyword"],
                         )

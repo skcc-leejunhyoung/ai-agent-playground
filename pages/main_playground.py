@@ -9,6 +9,7 @@ from components.result_manager import result_manager
 from database import (
     get_projects,
     get_results_by_project,
+    export_project_csv,
 )
 
 
@@ -39,7 +40,7 @@ if "project" not in st.session_state and query_params.get("selected_project"):
 
 if "project" not in st.session_state:
     st.error("프로젝트가 선택되지 않았습니다. 프로젝트 선택 페이지로 돌아가세요.")
-    st.stop()
+    st.switch_page("app.py")
 
 project = st.session_state["project"]
 project_id = project["project_id"]
@@ -71,13 +72,23 @@ with st.container():
 
 results_data = get_results_by_project(project_id)
 if results_data:
-    col1, col2 = st.columns(2)
+    csv_data = export_project_csv(project_id)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button(
             "Back to Project Select", type="tertiary", use_container_width=True
         ):
             st.switch_page("app.py")
     with col2:
+        st.download_button(
+            label="Export CSV",
+            data=csv_data,
+            file_name=f"{st.session_state['project']['project_name']}_export.csv",
+            mime="text/csv",
+            type="tertiary",
+            use_container_width=True,
+        )
+    with col3:
         if st.button("View History", type="tertiary", use_container_width=True):
             latest_session_id = max(result["session_id"] for result in results_data)
 
