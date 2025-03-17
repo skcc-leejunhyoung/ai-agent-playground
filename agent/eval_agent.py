@@ -24,13 +24,9 @@ def evaluate_response(response: str, keywords: list[str]) -> str:
     """
     normalized_response = clean_text(response).lower()
 
-    print(f"[CHECK] 정제된 응답 → '{normalized_response}'")
-
     for keyword in keywords:
         normalized_keyword = keyword.lower().strip()
-        print(f"[CHECK] 키워드 → '{normalized_keyword}'")
         if normalized_keyword not in normalized_response:
-            print(f"[MISS] '{normalized_keyword}'가 포함되지 않음")
             return "X"
 
     return "O"
@@ -66,7 +62,6 @@ def run_evaluation(project_id: int, session_id: int):
             row = cur.fetchone()
 
             if row is None:
-                print(f"[SKIP] result_id {result_id} 데이터가 없습니다.")
                 continue
 
             result_content = row["result"]
@@ -88,7 +83,7 @@ def run_evaluation(project_id: int, session_id: int):
             eval_pass = evaluate_response(combined_text, keywords)
 
         else:
-            print(f"[WARNING] 알 수 없는 eval_method '{eval_method}' → 기본 'P' 처리")
+            print(f"[EVAL] 알 수 없는 eval_method '{eval_method}' → 기본 'P' 처리")
             eval_pass = "X"
 
         update_eval_data(

@@ -71,7 +71,13 @@ with st.container():
 
 results_data = get_results_by_project(project_id)
 if results_data:
-    with st.container():
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button(
+            "Back to Project Select", type="tertiary", use_container_width=True
+        ):
+            st.switch_page("app.py")
+    with col2:
         if st.button("View History", type="tertiary", use_container_width=True):
             latest_session_id = max(result["session_id"] for result in results_data)
 
@@ -100,6 +106,9 @@ if results_data:
             )
 
             st.toast(f"Run #{latest_session_id} Results Loaded")
+else:
+    if st.button("Back to Project Select", type="tertiary", use_container_width=True):
+        st.switch_page("app.py")
 
 
 if st.session_state["results"]:

@@ -83,7 +83,7 @@ if not default_project:
     add_user_prompt("What is the currency of USA?", project_id)
     add_model("GPT-4o", project_id)
     add_model("GPT-4o mini", project_id)
-    st.toast("✨ 기본 프로젝트가 생성되었습니다!")
+    st.toast("기본 프로젝트가 생성되었습니다!")
     projects = get_projects()
 
 
@@ -134,7 +134,7 @@ if query_params.get("selected_project"):
     if selected_project:
         st.session_state["project"] = selected_project
         st.success(f"'{selected_project['project_name']}' 프로젝트가 선택되었습니다!")
-        st.page_link("main_playground", label="👉 Playground 바로가기", icon="🚀")
+        st.page_link("main_playground", label="Go to Playground")
 
 if query_params.get("add_project") or st.session_state.get("show_modal"):
     st.session_state["show_modal"] = True

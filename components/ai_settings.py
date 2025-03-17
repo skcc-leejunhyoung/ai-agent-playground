@@ -316,7 +316,7 @@ def ai_settings_ui(project_id):
 
         ##########
 
-        with st.expander("User Prompt", expanded=False):
+        with st.expander("User Prompt", expanded=True):
             user_compare_toggle = st.toggle(
                 "다중 User Prompt 활성화", key="user_toggle"
             )
