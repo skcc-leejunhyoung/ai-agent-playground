@@ -1102,28 +1102,35 @@ def generate_system_prompt_dialog(project_id):
         full_text = ""
 
         try:
-            for token in generate_prompt_by_intention_streaming(
-                user_intention, "system"
-            ):
-                if token.startswith("__RESULT_DATA__:"):
-                    try:
-                        result_json = token.replace("__RESULT_DATA__:", "")
-                        result_data = json.loads(result_json)
-                    except Exception as e:
-                        print(f"JSON 파싱 오류: {e}")
-                    continue
-
-                full_text += token
-                output_container.markdown(full_text)
-
-                if (
-                    "초기 프롬프트 초안 생성 완료" in full_text
-                    or "프롬프트 개선 완료" in full_text
-                    or "최종 프롬프트 확정 완료" in full_text
+            with st.status("System 프롬프트 초안 생성 중...", expanded=True) as status:
+                for token in generate_prompt_by_intention_streaming(
+                    user_intention, "system"
                 ):
-                    time.sleep(0.5)
-                    output_container.empty()
-                    full_text = ""
+                    if token.startswith("__RESULT_DATA__:"):
+                        try:
+                            result_json = token.replace("__RESULT_DATA__:", "")
+                            result_data = json.loads(result_json)
+                        except Exception as e:
+                            print(f"JSON 파싱 오류: {e}")
+                        continue
+
+                    full_text += token
+                    output_container.markdown(full_text)
+
+                    if "<|eot_id|>초안<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(label="초기 프롬프트 개선중...", state="running")
+                        full_text = ""
+                    elif "<|eot_id|>개선<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(label="최종 프롬프트 확정중...", state="running")
+                        full_text = ""
+                    elif "<|eot_id|>최종<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(
+                            label="System 프롬프트 생성 완료", state="complete"
+                        )
+                        full_text = ""
 
             if result_data and result_data.get("prompt"):
                 new_prompt = result_data["prompt"]
@@ -1174,25 +1181,33 @@ def generate_user_prompt_dialog(project_id):
         full_text = ""
 
         try:
-            for token in generate_prompt_by_intention_streaming(user_intention, "user"):
-                if token.startswith("__RESULT_DATA__:"):
-                    try:
-                        result_json = token.replace("__RESULT_DATA__:", "")
-                        result_data = json.loads(result_json)
-                    except Exception as e:
-                        print(f"JSON 파싱 오류: {e}")
-                    continue
-
-                full_text += token
-                output_container.markdown(full_text)
-
-                if (
-                    "초기 프롬프트 초안 생성 완료" in full_text
-                    or "프롬프트 개선 완료" in full_text
-                    or "최종 프롬프트 확정 완료" in full_text
+            with st.status("User 프롬프트 초안 생성 중...", expanded=True) as status:
+                for token in generate_prompt_by_intention_streaming(
+                    user_intention, "user"
                 ):
-                    output_container.empty()
-                    full_text = ""
+                    if token.startswith("__RESULT_DATA__:"):
+                        try:
+                            result_json = token.replace("__RESULT_DATA__:", "")
+                            result_data = json.loads(result_json)
+                        except Exception as e:
+                            print(f"JSON 파싱 오류: {e}")
+                        continue
+
+                    full_text += token
+                    output_container.markdown(full_text)
+
+                    if "<|eot_id|>초안<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(label="초기 프롬프트 개선중...", state="running")
+                        full_text = ""
+                    elif "<|eot_id|>개선<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(label="최종 프롬프트 확정중...", state="running")
+                        full_text = ""
+                    elif "<|eot_id|>최종<|eot_id|>" in full_text:
+                        output_container.empty()
+                        status.update(label="User 프롬프트 확정 완료", state="complete")
+                        full_text = ""
 
             if result_data and result_data.get("prompt"):
                 new_prompt = result_data["prompt"]

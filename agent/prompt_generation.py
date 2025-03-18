@@ -423,7 +423,7 @@ def run_prompt_generation_agent_streaming(user_intention, prompt_type=None):
             "reasoning": parsed_output.reasoning.strip(),
         }
 
-        for char in "\n\n 초기 프롬프트 초안 생성 완료\n\n":
+        for char in "\n\n<|eot_id|>초안<|eot_id|>\n\n":
             yield char
 
         if prompt_type == "user":
@@ -435,12 +435,6 @@ def run_prompt_generation_agent_streaming(user_intention, prompt_type=None):
 
         for char in message:
             yield char
-
-        # 2단계: 프롬프트 개선
-        for char in "프롬프트 개선 중...\n\n":
-            yield char
-
-        current_phase = "프롬프트 개선"
 
         type_specific_guidance = ""
         if prompt_type == "user":
@@ -511,10 +505,7 @@ def run_prompt_generation_agent_streaming(user_intention, prompt_type=None):
             "reasoning": parsed_output.reasoning.strip(),
         }
 
-        for char in "\n\n프롬프트 개선 완료\n\n":
-            yield char
-
-        for char in "최종 프롬프트 확정 중...\n\n":
+        for char in "\n\n<|eot_id|>개선<|eot_id|>\n\n":
             yield char
 
         type_specific_guidance = ""
@@ -594,10 +585,7 @@ def run_prompt_generation_agent_streaming(user_intention, prompt_type=None):
             final_output["prompt"] = final_prompt["system_prompt"]
         final_output["reasoning"] = final_prompt["reasoning"]
 
-        for char in "\n\n최종 프롬프트 확정 완료\n\n":
-            yield char
-
-        for char in "프롬프트 생성이 완료되었습니다!\n\n":
+        for char in "\n\n<|eot_id|>최종<|eot_id|>\n\n":
             yield char
 
         if prompt_type == "user":
