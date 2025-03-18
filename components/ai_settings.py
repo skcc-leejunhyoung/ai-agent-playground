@@ -98,16 +98,8 @@ def ai_settings_ui(project_id):
                 if "system_select_2_idx" not in st.session_state:
                     st.session_state["system_select_2_idx"] = 1
                 prompt_count = len(st.session_state["system_prompts"])
-                available_idx_for_1 = [
-                    i
-                    for i in range(prompt_count)
-                    if i != st.session_state["system_select_2_idx"]
-                ]
-                available_idx_for_2 = [
-                    i
-                    for i in range(prompt_count)
-                    if i != st.session_state["system_select_1_idx"]
-                ]
+                available_idx_for_1 = list(range(prompt_count))
+                available_idx_for_2 = list(range(prompt_count))
                 with st.container():
                     col1, col2 = st.columns(2)
                     with col1:
@@ -117,19 +109,20 @@ def ai_settings_ui(project_id):
                                 idx_1 = st.selectbox(
                                     "sys 1 선택",
                                     options=available_idx_for_1,
-                                    index=(
-                                        available_idx_for_1.index(
-                                            st.session_state["system_select_1_idx"]
-                                        )
-                                        if st.session_state["system_select_1_idx"]
-                                        in available_idx_for_1
-                                        else 0
-                                    ),
+                                    index=st.session_state["system_select_1_idx"],
                                     format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
                                     key="system_select_1",
                                     label_visibility="collapsed",
                                 )
-                                st.session_state["system_select_1_idx"] = idx_1
+                                if idx_1 == st.session_state["system_select_2_idx"]:
+                                    temp = st.session_state["system_select_1_idx"]
+                                    st.session_state["system_select_1_idx"] = (
+                                        st.session_state["system_select_2_idx"]
+                                    )
+                                    st.session_state["system_select_2_idx"] = temp
+                                    st.rerun()
+                                else:
+                                    st.session_state["system_select_1_idx"] = idx_1
                             with c2:
                                 btn_update_sys_1 = st.button(
                                     ":material/save:",
@@ -164,19 +157,20 @@ def ai_settings_ui(project_id):
                                 idx_2 = st.selectbox(
                                     "sys 2 선택",
                                     options=available_idx_for_2,
-                                    index=(
-                                        available_idx_for_2.index(
-                                            st.session_state["system_select_2_idx"]
-                                        )
-                                        if st.session_state["system_select_2_idx"]
-                                        in available_idx_for_2
-                                        else 0
-                                    ),
+                                    index=st.session_state["system_select_2_idx"],
                                     format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
                                     key="system_select_2",
                                     label_visibility="collapsed",
                                 )
-                                st.session_state["system_select_2_idx"] = idx_2
+                                if idx_2 == st.session_state["system_select_1_idx"]:
+                                    temp = st.session_state["system_select_2_idx"]
+                                    st.session_state["system_select_2_idx"] = (
+                                        st.session_state["system_select_1_idx"]
+                                    )
+                                    st.session_state["system_select_1_idx"] = temp
+                                    st.rerun()
+                                else:
+                                    st.session_state["system_select_2_idx"] = idx_2
                             with c2:
                                 editor_2_btn = st.button(
                                     ":material/save:",
@@ -339,16 +333,8 @@ def ai_settings_ui(project_id):
                 if "user_select_2_idx" not in st.session_state:
                     st.session_state["user_select_2_idx"] = 1
                 prompt_count = len(st.session_state["user_prompts"])
-                available_idx_for_1 = [
-                    i
-                    for i in range(prompt_count)
-                    if i != st.session_state["user_select_2_idx"]
-                ]
-                available_idx_for_2 = [
-                    i
-                    for i in range(prompt_count)
-                    if i != st.session_state["user_select_1_idx"]
-                ]
+                available_idx_for_1 = list(range(prompt_count))
+                available_idx_for_2 = list(range(prompt_count))
                 col1, col2 = st.columns(2)
                 with col1:
                     c1, c2 = st.columns([10, 1])
@@ -356,19 +342,20 @@ def ai_settings_ui(project_id):
                         idx_1 = st.selectbox(
                             "usr 1 선택",
                             options=available_idx_for_1,
-                            index=(
-                                available_idx_for_1.index(
-                                    st.session_state["user_select_1_idx"]
-                                )
-                                if st.session_state["user_select_1_idx"]
-                                in available_idx_for_1
-                                else 0
-                            ),
+                            index=st.session_state["user_select_1_idx"],
                             format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
                             key="user_select_1",
                             label_visibility="collapsed",
                         )
-                        st.session_state["user_select_1_idx"] = idx_1
+                        if idx_1 == st.session_state["user_select_2_idx"]:
+                            temp = st.session_state["user_select_1_idx"]
+                            st.session_state["user_select_1_idx"] = st.session_state[
+                                "user_select_2_idx"
+                            ]
+                            st.session_state["user_select_2_idx"] = temp
+                            st.rerun()
+                        else:
+                            st.session_state["user_select_1_idx"] = idx_1
                     with c2:
                         btn_update_usr_1 = st.button(
                             ":material/save:",
@@ -392,19 +379,20 @@ def ai_settings_ui(project_id):
                         idx_2 = st.selectbox(
                             "usr 2 선택",
                             options=available_idx_for_2,
-                            index=(
-                                available_idx_for_2.index(
-                                    st.session_state["user_select_2_idx"]
-                                )
-                                if st.session_state["user_select_2_idx"]
-                                in available_idx_for_2
-                                else 0
-                            ),
+                            index=st.session_state["user_select_2_idx"],
                             format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
                             key="user_select_2",
                             label_visibility="collapsed",
                         )
-                        st.session_state["user_select_2_idx"] = idx_2
+                        if idx_2 == st.session_state["user_select_1_idx"]:
+                            temp = st.session_state["user_select_2_idx"]
+                            st.session_state["user_select_2_idx"] = st.session_state[
+                                "user_select_1_idx"
+                            ]
+                            st.session_state["user_select_1_idx"] = temp
+                            st.rerun()
+                        else:
+                            st.session_state["user_select_2_idx"] = idx_2
                     with c2:
                         btn_update_usr_2 = st.button(
                             ":material/save:",
