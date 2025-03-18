@@ -4,3 +4,6 @@ streamlit_monaco
 markdown
 openai
 dotenv
+langgraph
+langchain
+langchain_openai

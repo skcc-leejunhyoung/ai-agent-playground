@@ -7,7 +7,7 @@ import uuid
 import time
 
 from model import stream_chat
-from agent.eval_agent import run_evaluation
+from agent.eval_tools import run_evaluation
 from database import (
     add_system_prompt,
     get_system_prompts,

@@ -1,96 +1,183 @@
 # agent/eval_agent.py
 
-import json
-import re
-from database import get_eval_data, update_eval_data, get_connection
+from langgraph.graph import StateGraph
+import pandas as pd
+import os
+from dotenv import load_dotenv
+
+from langchain_openai import AzureChatOpenAI
+from langchain.schema import HumanMessage, SystemMessage
+from langchain.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
+
+from database import add_system_prompt
 
 
-def clean_text(text: str) -> str:
-    """
-    마크다운 및 특수문자 제거 함수
-    - **Bold** -> Bold
-    - 기타 특수문자 제거
-    """
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    text = re.sub(r"[^\w\s]", "", text)
-    return text.strip()
+##########
 
 
-def evaluate_response(response: str, keywords: list[str]) -> str:
-    """
-    주어진 응답(response)에 키워드가 모두 포함되면 'O', 하나라도 빠지면 'X' 반환
-    - 대소문자 구분 없음
-    - 특수문자 제거
-    """
-    normalized_response = clean_text(response).lower()
+load_dotenv()
 
-    for keyword in keywords:
-        normalized_keyword = keyword.lower().strip()
-        if normalized_keyword not in normalized_response:
-            return "X"
+AOAI_API_KEY = os.getenv("AOAI_API_KEY")
+AOAI_ENDPOINT = os.getenv("AOAI_ENDPOINT")
+AOAI_DEPLOY_GPT4O = os.getenv("AOAI_DEPLOY_GPT4O")
+AOAI_API_VERSION = "2024-02-15-preview"
 
-    return "O"
+llm_gpt4o = AzureChatOpenAI(
+    openai_api_key=AOAI_API_KEY,
+    azure_endpoint=AOAI_ENDPOINT,
+    api_version=AOAI_API_VERSION,
+    deployment_name=AOAI_DEPLOY_GPT4O,
+    temperature=0.7,
+    max_tokens=500,
+)
 
 
-def run_evaluation(project_id: int, session_id: int):
-    """
-    특정 프로젝트와 세션의 모든 result에 대해 평가 후 eval_pass 필드 업데이트
+##########
 
-    규칙:
-    - eval_method가 'pass'면 무조건 'P'
-    - eval_method가 'rule'이면 eval_keyword 기준으로 result 평가하여 'O' 또는 'X'
-    """
-    eval_data = get_eval_data(project_id, session_id)
-    print(
-        f"[EVAL] 프로젝트 {project_id}, 세션 {session_id}: {len(eval_data)}개의 결과 평가 중..."
+
+class SystemPromptOutput(BaseModel):
+    system_prompt: str = Field(..., description="최종 개선된 시스템 프롬프트입니다.")
+    reason: str = Field(
+        ...,
+        description="프롬프트를 이렇게 개선한 이유와 설명입니다. 최대한 구체적으로 작성하되 markdown 포맷으로 보기좋게 한국어로 작성하세요.",
     )
 
-    for data in eval_data:
-        result_id = data["id"]
 
-        with get_connection() as conn:
-            cur = conn.cursor()
+system_prompt_parser = PydanticOutputParser(pydantic_object=SystemPromptOutput)
 
-            cur.execute(
-                """
-                SELECT result, eval_method, eval_keyword
-                FROM result
-                WHERE id = ?
-                """,
-                (result_id,),
-            )
-            row = cur.fetchone()
 
-            if row is None:
-                continue
+##########
 
-            result_content = row["result"]
-            eval_method = row["eval_method"]
-            eval_keyword = row["eval_keyword"]
 
-        if eval_method == "pass":
-            eval_pass = "P"
+def run_eval_agent(results, project_id):
+    if not results:
+        print("⚠️ 평가할 결과가 없습니다.")
+        return None
 
-        elif eval_method == "rule":
-            if "<|eot_id|>" in eval_keyword:
-                keywords = [
-                    kw.strip() for kw in eval_keyword.split("<|eot_id|>") if kw.strip()
-                ]
-            else:
-                keywords = [kw.strip() for kw in eval_keyword.split(",") if kw.strip()]
+    df = pd.DataFrame(results)
 
-            combined_text = result_content
-            eval_pass = evaluate_response(combined_text, keywords)
+    state = {
+        "df": df,
+        "analysis": None,
+        "best_prompts": None,
+        "improved_prompt": None,
+        "project_id": project_id,
+    }
 
-        else:
-            print(f"[EVAL] 알 수 없는 eval_method '{eval_method}' → 기본 'P' 처리")
-            eval_pass = "X"
+    def load_results(state):
+        return state
 
-        update_eval_data(
-            result_id,
-            eval_pass=eval_pass,
-            eval_method=eval_method,
-            eval_keyword=eval_keyword,
+    def analyze_results(state):
+        df = state["df"]
+        grouped = (
+            df[df["eval_pass"] == "O"]
+            .groupby(["user_prompt", "model", "system_prompt"])
+            .size()
+            .reset_index(name="eval_pass_O_count")
+        )
+        state["analysis"] = grouped
+        return state
+
+    def find_best_prompts(state):
+        df = state["df"]
+        passed_df = df[df["eval_pass"] == "O"]
+        grouped = (
+            passed_df.groupby(["model", "system_prompt"])
+            .size()
+            .reset_index(name="eval_pass_O_count")
+        )
+        best_prompts = (
+            grouped.sort_values("eval_pass_O_count", ascending=False)
+            .groupby("model")
+            .first()
+            .reset_index()
+        )
+        state["best_prompts"] = best_prompts
+        return state
+
+    def suggest_improved_prompt(state):
+        best_prompts = state["best_prompts"]
+
+        top_row = best_prompts.sort_values("eval_pass_O_count", ascending=False).iloc[0]
+        model = top_row["model"]
+        system_prompt = top_row["system_prompt"]
+        pass_count = top_row["eval_pass_O_count"]
+
+        format_instructions = system_prompt_parser.get_format_instructions()
+
+        prompt_input = (
+            f"다음 시스템 프롬프트를 사용하여 {model} 모델이 {pass_count}개의 성공을 거두었습니다.\n\n"
+            f'시스템 프롬프트:\n"{system_prompt}"\n\n'
+            "이 시스템 프롬프트를 개선하여 더 나은 결과를 얻기 위해 수정하거나 보완해 주세요.\n\n"
+            "개선한 이유를 상세하게 설명하고, 아래 포맷에 맞춰 작성해 주세요.\n\n"
+            f"{format_instructions}"
         )
 
-    print(f"[EVAL] 프로젝트 {project_id}, 세션 {session_id} 평가 완료")
+        try:
+            response = llm_gpt4o.invoke(
+                [
+                    SystemMessage(
+                        content="당신은 뛰어난 AI 프롬프트 엔지니어입니다. 아래 포맷을 따라 개선된 시스템 프롬프트와 개선 이유를 제안하세요."
+                    ),
+                    HumanMessage(content=prompt_input),
+                ]
+            )
+
+            parsed_output = system_prompt_parser.parse(response.content)
+            improved_prompt = parsed_output.system_prompt.strip()
+            reason = parsed_output.reason.strip()
+
+            add_system_prompt(improved_prompt, state["project_id"])
+
+            state["improved_prompt"] = {
+                "model": model,
+                "improved_prompt": improved_prompt,
+                "reason": reason,
+            }
+
+        except Exception as e:
+            print(f"[ERROR] 프롬프트 개선 중 오류 발생: {e}")
+
+        return state
+
+    def report_results(state):
+        analysis = state["best_prompts"]
+        print("--최종 평가 및 개선 결과 리포트--\n")
+
+        for _, row in analysis.iterrows():
+            print(
+                f"Model: {row['model']}\n"
+                f"Best System Prompt: {row['system_prompt']}\n"
+                f"Pass Count: {row['eval_pass_O_count']}\n"
+            )
+
+        if state["improved_prompt"]:
+            improved = state["improved_prompt"]
+            print(
+                f"\n개선된 시스템 프롬프트 ({improved['model']})\n➡️ {improved['improved_prompt']}\n"
+                f"개선 이유: {improved['reason']}\n"
+            )
+
+        return state
+
+    ##########
+
+    graph = StateGraph(dict)
+
+    graph.add_node("Load Results", load_results)
+    graph.add_node("Analyze Results", analyze_results)
+    graph.add_node("Find Best Prompts", find_best_prompts)
+    graph.add_node("Suggest Improved Prompt", suggest_improved_prompt)
+    graph.add_node("Report Results", report_results)
+
+    graph.set_entry_point("Load Results")
+    graph.add_edge("Load Results", "Analyze Results")
+    graph.add_edge("Analyze Results", "Find Best Prompts")
+    graph.add_edge("Find Best Prompts", "Suggest Improved Prompt")
+    graph.add_edge("Suggest Improved Prompt", "Report Results")
+
+    graph_executor = graph.compile()
+
+    result = graph_executor.invoke(state)
+    return result
