@@ -207,33 +207,34 @@ def get_project_excluded_prompts(project_id):
 
 def export_project_csv(project_id):
     """
-    Export project data as CSV. Excludes all id columns and project_id.
-    Column names are prefixed with table names for clarity.
+    Export project data as CSV.
+    제외된 프롬프트는 내보내지 않고, 제외 목록은 포함합니다.
     """
     output = io.StringIO()
     writer = csv.writer(output)
 
+    # Header 정의
     writer.writerow(
         [
-            "table",  # 테이블 이름
-            "project_project_name",  # project
-            "project_current_session_id",  # project
-            "project_description",  # project
-            "project_excluded_system_prompts",  # project
-            "project_excluded_user_prompts",  # project
-            "system_prompt_prompt",  # system_prompt
-            "user_prompt_prompt",  # user_prompt
-            "user_prompt_eval_method",  # user_prompt
-            "user_prompt_eval_keyword",  # user_prompt
-            "model_model_name",  # model
-            "result_system_prompt",  # result
-            "result_user_prompt",  # result
-            "result_model",  # result
-            "result_result",  # result
-            "result_session_id",  # result
-            "result_eval_pass",  # result
-            "result_eval_method",  # result
-            "result_eval_keyword",  # result
+            "table",
+            "project_project_name",
+            "project_current_session_id",
+            "project_description",
+            "project_excluded_system_prompts",
+            "project_excluded_user_prompts",
+            "system_prompt_prompt",
+            "user_prompt_prompt",
+            "user_prompt_eval_method",
+            "user_prompt_eval_keyword",
+            "model_model_name",
+            "result_system_prompt",
+            "result_user_prompt",
+            "result_model",
+            "result_result",
+            "result_session_id",
+            "result_eval_pass",
+            "result_eval_method",
+            "result_eval_keyword",
         ]
     )
 
@@ -247,7 +248,7 @@ def export_project_csv(project_id):
                    excluded_system_prompts, excluded_user_prompts
             FROM project
             WHERE project_id = ?
-        """,
+            """,
             (project_id,),
         )
         proj_row = cur.fetchone()
@@ -271,20 +272,40 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
+                    "",
+                    "",
                 ]
             )
+
+            excluded_system_ids = []
+            excluded_user_ids = []
+
+            if proj_row["excluded_system_prompts"]:
+                excluded_system_ids = [
+                    int(id)
+                    for id in proj_row["excluded_system_prompts"].split(",")
+                    if id
+                ]
+
+            if proj_row["excluded_user_prompts"]:
+                excluded_user_ids = [
+                    int(id) for id in proj_row["excluded_user_prompts"].split(",") if id
+                ]
 
         # SYSTEM_PROMPT
         cur.execute(
             """
-            SELECT prompt
+            SELECT id, prompt
             FROM system_prompt
             WHERE project_id = ?
-        """,
+            """,
             (project_id,),
         )
         sys_prompts = cur.fetchall()
         for sp in sys_prompts:
+            if sp["id"] in excluded_system_ids:
+                continue
+
             writer.writerow(
                 [
                     "system_prompt",
@@ -305,20 +326,23 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
+                    "",
                 ]
             )
 
-        # USER_PROMPT
         cur.execute(
             """
-            SELECT prompt, eval_method, eval_keyword
+            SELECT id, prompt, eval_method, eval_keyword
             FROM user_prompt
             WHERE project_id = ?
-        """,
+            """,
             (project_id,),
         )
         user_prompts = cur.fetchall()
         for up in user_prompts:
+            if up["id"] in excluded_user_ids:
+                continue
+
             writer.writerow(
                 [
                     "user_prompt",
@@ -328,9 +352,10 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    up["prompt"],  # user_prompt_prompt
-                    up["eval_method"],  # user_prompt_eval_method
-                    up["eval_keyword"],  # user_prompt_eval_keyword
+                    up["prompt"],
+                    up["eval_method"],
+                    up["eval_keyword"],
+                    "",
                     "",
                     "",
                     "",
@@ -342,13 +367,12 @@ def export_project_csv(project_id):
                 ]
             )
 
-        # MODEL
         cur.execute(
             """
             SELECT model_name
             FROM model
             WHERE project_id = ?
-        """,
+            """,
             (project_id,),
         )
         models = cur.fetchall()
@@ -365,7 +389,8 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    m["model_name"],  # model_model_name
+                    m["model_name"],
+                    "",
                     "",
                     "",
                     "",
@@ -376,14 +401,13 @@ def export_project_csv(project_id):
                 ]
             )
 
-        # RESULT
         cur.execute(
             """
             SELECT system_prompt, user_prompt, model, result,
-                session_id, eval_pass, eval_method, eval_keyword
+                   session_id, eval_pass, eval_method, eval_keyword
             FROM result
             WHERE project_id = ?
-        """,
+            """,
             (project_id,),
         )
         results = cur.fetchall()
@@ -398,15 +422,17 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    "",  # 앞부분 빈칸
-                    res["system_prompt"],  # result_system_prompt
-                    res["user_prompt"],  # result_user_prompt
-                    res["model"],  # result_model
-                    res["result"],  # result_result
-                    res["session_id"],  # result_session_id
-                    res["eval_pass"],  # result_eval_pass
-                    res["eval_method"],  # result_eval_method
-                    res["eval_keyword"],  # result_eval_keyword
+                    "",
+                    "",
+                    "",
+                    res["system_prompt"],
+                    res["user_prompt"],
+                    res["model"],
+                    res["result"],
+                    res["session_id"],
+                    res["eval_pass"],
+                    res["eval_method"],
+                    res["eval_keyword"],
                 ]
             )
 
