@@ -19,6 +19,8 @@ from database import (
     get_results_by_project,
     update_system_prompt,
     update_user_prompt,
+    update_project_excluded_prompts,
+    get_project_excluded_prompts,
 )
 
 
@@ -56,6 +58,30 @@ def ai_settings_ui(project_id):
     project_id를 입력하면 시스템, 유저 프롬프트, 모델 선택 등 모든 설정 UI를 렌더링하고,
     실행 버튼을 클릭하면 결과 데이터를 session_state["results"]에 저장합니다.
     """
+
+    try:
+        excluded_system_prompts, excluded_user_prompts = get_project_excluded_prompts(
+            project_id
+        )
+    except Exception as e:
+        print(f"[ERROR] 제외된 프롬프트 목록 조회 실패: {e}")
+        excluded_system_prompts, excluded_user_prompts = [], []
+
+    if "excluded_system_prompt_ids" not in st.session_state:
+        st.session_state["excluded_system_prompt_ids"] = excluded_system_prompts
+    if "excluded_user_prompt_ids" not in st.session_state:
+        st.session_state["excluded_user_prompt_ids"] = excluded_user_prompts
+
+    def update_excluded_prompts():
+        try:
+            update_project_excluded_prompts(
+                project_id,
+                st.session_state.get("excluded_system_prompt_ids", []),
+                st.session_state.get("excluded_user_prompt_ids", []),
+            )
+        except Exception as e:
+            print(f"[ERROR] 제외된 프롬프트 목록 업데이트 실패: {e}")
+            st.toast("제외된 프롬프트 목록 저장 중 오류가 발생했습니다.", icon="⚠️")
 
     with st.container():
         header_col1, header_col2 = st.columns([2, 1], vertical_alignment="center")
@@ -263,50 +289,122 @@ def ai_settings_ui(project_id):
                     )
             else:
                 db_system_prompts = get_system_prompts(project_id)
+                if "excluded_system_prompt_ids" not in st.session_state:
+                    st.session_state["excluded_system_prompt_ids"] = []
                 st.session_state["system_prompts"] = [
                     {"id": row["id"], "prompt": row["prompt"]}
                     for row in db_system_prompts
+                    if row["id"] not in st.session_state["excluded_system_prompt_ids"]
                 ]
                 if "system_single_idx" not in st.session_state:
                     st.session_state["system_single_idx"] = 0
                 prompt_count = len(st.session_state["system_prompts"])
-                c1, c2 = st.columns([10, 1])
+
+                if (
+                    prompt_count > 0
+                    and st.session_state["system_single_idx"] >= prompt_count
+                ):
+                    st.session_state["system_single_idx"] = 0
+
+                c1, c2, c3, c4 = st.columns([9, 1, 1, 1])
                 with c1:
-                    idx = st.selectbox(
-                        "System Prompt 선택",
-                        options=list(range(prompt_count)),
-                        index=st.session_state["system_single_idx"],
-                        format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
-                        key="system_single_select",
-                        label_visibility="collapsed",
-                    )
-                    st.session_state["system_single_idx"] = idx
+                    if prompt_count > 0:
+                        idx = st.selectbox(
+                            "System Prompt 선택",
+                            options=list(range(prompt_count)),
+                            index=st.session_state["system_single_idx"],
+                            format_func=lambda x: f"{x+1}. {st.session_state['system_prompts'][x]['prompt'][:30]}...",
+                            key="system_single_select",
+                            label_visibility="collapsed",
+                        )
+                        st.session_state["system_single_idx"] = idx
+                    else:
+                        st.info("사용 가능한 System Prompt가 없습니다.")
+                        idx = 0
+
                 with c2:
-                    btn_update_sys = st.button(
-                        ":material/save:",
-                        key=f"update_system_single_top_{idx}",
+                    if prompt_count > 0:
+                        btn_update_sys = st.button(
+                            ":material/save:",
+                            key=f"update_system_single_top_{idx}",
+                            type="tertiary",
+                            use_container_width=True,
+                        )
+
+                with c3:
+                    if st.button(
+                        ":material/add:",
                         type="tertiary",
                         use_container_width=True,
-                    )
-                editor_single = st_monaco(
-                    value=st.session_state["system_prompts"][idx]["prompt"],
-                    language="markdown",
-                    height="300px",
-                    theme="vs-dark",
-                )
-                if editor_single is not None:
-                    st.session_state["system_prompts"][idx]["prompt"] = editor_single
-                if btn_update_sys:
-                    prompt_id = st.session_state["system_prompts"][idx]["id"]
-                    prompt_text = st.session_state["system_prompts"][idx]["prompt"]
-                    if prompt_id:
-                        update_system_prompt(prompt_id, prompt_text)
-                        st.toast("System Prompt updated")
-                        time.sleep(0.7)
+                        key="add_system_prompt_single",
+                    ):
+                        new_prompt = f"You are helpful assistant! #{generate_uuid()}"
+                        new_id = add_system_prompt(new_prompt, project_id)
+                        st.session_state["system_prompts"].append(
+                            {"id": new_id, "prompt": new_prompt}
+                        )
+                        st.session_state["system_single_idx"] = (
+                            len(st.session_state["system_prompts"]) - 1
+                        )
                         st.rerun()
-                    else:
-                        st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
-                system_single_text = st.session_state["system_prompts"][idx]["prompt"]
+
+                with c4:
+                    if prompt_count > 0 and st.button(
+                        ":material/remove:",
+                        type="tertiary",
+                        use_container_width=True,
+                        key="remove_system_prompt_single",
+                    ):
+                        if len(st.session_state["system_prompts"]) <= 1:
+                            st.toast(
+                                "최소 1개의 시스템 프롬프트가 필요합니다.", icon="⚠️"
+                            )
+                        else:
+                            removed = st.session_state["system_prompts"].pop(idx)
+                            st.session_state.setdefault(
+                                "excluded_system_prompt_ids", []
+                            ).append(removed["id"])
+                            try:
+                                update_excluded_prompts()
+                            except Exception as e:
+                                print(f"[ERROR] 제외된 프롬프트 저장 실패: {e}")
+
+                            if st.session_state["system_single_idx"] >= len(
+                                st.session_state["system_prompts"]
+                            ):
+                                st.session_state["system_single_idx"] = max(
+                                    0, len(st.session_state["system_prompts"]) - 1
+                                )
+                            st.rerun()
+
+                if prompt_count > 0:
+                    editor_single = st_monaco(
+                        value=st.session_state["system_prompts"][idx]["prompt"],
+                        language="markdown",
+                        height="300px",
+                        theme="vs-dark",
+                    )
+                    if editor_single is not None:
+                        st.session_state["system_prompts"][idx][
+                            "prompt"
+                        ] = editor_single
+                    if btn_update_sys:
+                        prompt_id = st.session_state["system_prompts"][idx]["id"]
+                        prompt_text = st.session_state["system_prompts"][idx]["prompt"]
+                        if prompt_id:
+                            update_system_prompt(prompt_id, prompt_text)
+                            st.toast("System Prompt updated")
+                            time.sleep(0.7)
+                            st.rerun()
+                        else:
+                            st.warning("저장할 수 없는 프롬프트입니다.", icon="⚠️")
+                    system_single_text = (
+                        st.session_state["system_prompts"][idx]["prompt"]
+                        if prompt_count > 0
+                        else ""
+                    )
+                else:
+                    system_single_text = ""
 
         ##########
 
@@ -573,6 +671,8 @@ def ai_settings_ui(project_id):
                         st.rerun()
             else:
                 db_user_prompts = get_user_prompts(project_id)
+                if "excluded_user_prompt_ids" not in st.session_state:
+                    st.session_state["excluded_user_prompt_ids"] = []
                 st.session_state["user_prompts"] = [
                     {
                         "id": row["id"],
@@ -581,85 +681,157 @@ def ai_settings_ui(project_id):
                         "eval_keyword": row["eval_keyword"],
                     }
                     for row in db_user_prompts
+                    if row["id"] not in st.session_state["excluded_user_prompt_ids"]
                 ]
                 if "user_single_idx" not in st.session_state:
                     st.session_state["user_single_idx"] = 0
                 prompt_count = len(st.session_state["user_prompts"])
-                c1, c2 = st.columns([10, 1])
+
+                if (
+                    prompt_count > 0
+                    and st.session_state["user_single_idx"] >= prompt_count
+                ):
+                    st.session_state["user_single_idx"] = 0
+
+                c1, c2, c3, c4 = st.columns([9, 1, 1, 1])
                 with c1:
-                    idx = st.selectbox(
-                        "User Prompt 선택",
-                        options=list(range(prompt_count)),
-                        index=st.session_state["user_single_idx"],
-                        format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
-                        key="user_single_select",
-                        label_visibility="collapsed",
-                    )
-                    st.session_state["user_single_idx"] = idx
+                    if prompt_count > 0:
+                        idx = st.selectbox(
+                            "User Prompt 선택",
+                            options=list(range(prompt_count)),
+                            index=st.session_state["user_single_idx"],
+                            format_func=lambda x: f"{x+1}. {st.session_state['user_prompts'][x]['prompt'][:30]}...",
+                            key="user_single_select",
+                            label_visibility="collapsed",
+                        )
+                        st.session_state["user_single_idx"] = idx
+                    else:
+                        st.info("사용 가능한 User Prompt가 없습니다.")
+                        idx = 0
+
                 with c2:
-                    btn_update_usr = st.button(
-                        ":material/save:",
-                        key=f"update_user_single_top_{idx}",
+                    if prompt_count > 0:
+                        btn_update_usr = st.button(
+                            ":material/save:",
+                            key=f"update_user_single_top_{idx}",
+                            type="tertiary",
+                            use_container_width=True,
+                        )
+
+                with c3:
+                    if st.button(
+                        ":material/add:",
                         type="tertiary",
                         use_container_width=True,
-                    )
-                editor_single = st_monaco(
-                    value=st.session_state["user_prompts"][idx]["prompt"],
-                    language="markdown",
-                    height="300px",
-                    theme="vs-dark",
-                )
-                if editor_single is not None:
-                    st.session_state["user_prompts"][idx]["prompt"] = editor_single
+                        key="add_user_prompt_single",
+                    ):
+                        new_prompt = f"User Prompt #{generate_uuid()}"
+                        new_id = add_user_prompt(new_prompt, project_id)
+                        st.session_state["user_prompts"].append(
+                            {
+                                "id": new_id,
+                                "prompt": new_prompt,
+                                "eval_method": "pass",
+                                "eval_keyword": "",
+                            }
+                        )
+                        st.session_state["user_single_idx"] = (
+                            len(st.session_state["user_prompts"]) - 1
+                        )
+                        st.rerun()
 
-                method_options = ["pass", "rule"]
-                current_method = (
-                    st.session_state["user_prompts"][idx].get("eval_method") or "pass"
-                )
-                current_keyword = (
-                    st.session_state["user_prompts"][idx].get("eval_keyword") or ""
-                )
-                eval_method_single = st.segmented_control(
-                    "평가 방법 선택 (eval_method)",
-                    options=method_options,
-                    default=(
-                        current_method
-                        if current_method in method_options
-                        else method_options[0]
-                    ),
-                    key=f"user_eval_method_select_single_{idx}",
-                    label_visibility="collapsed",
-                )
-                st.session_state["user_prompts"][idx][
-                    "eval_method"
-                ] = eval_method_single
-                if eval_method_single == "rule":
-                    eval_keyword_single = st.text_area(
-                        "평가 keyword 입력",
-                        height=68,
-                        value=current_keyword,
-                        key=f"user_eval_keyword_single_{idx}",
+                with c4:
+                    if prompt_count > 0 and st.button(
+                        ":material/remove:",
+                        type="tertiary",
+                        use_container_width=True,
+                        key="remove_user_prompt_single",
+                    ):
+                        if len(st.session_state["user_prompts"]) <= 1:
+                            st.toast("최소 1개의 유저 프롬프트가 필요합니다.", icon="⚠️")
+                        else:
+                            removed = st.session_state["user_prompts"].pop(idx)
+                            st.session_state.setdefault(
+                                "excluded_user_prompt_ids", []
+                            ).append(removed["id"])
+                            try:
+                                update_excluded_prompts()
+                            except Exception as e:
+                                print(f"[ERROR] 제외된 프롬프트 저장 실패: {e}")
+
+                            if st.session_state["user_single_idx"] >= len(
+                                st.session_state["user_prompts"]
+                            ):
+                                st.session_state["user_single_idx"] = max(
+                                    0, len(st.session_state["user_prompts"]) - 1
+                                )
+                            st.rerun()
+
+                if prompt_count > 0:
+                    editor_single = st_monaco(
+                        value=st.session_state["user_prompts"][idx]["prompt"],
+                        language="markdown",
+                        height="300px",
+                        theme="vs-dark",
+                    )
+                    if editor_single is not None:
+                        st.session_state["user_prompts"][idx]["prompt"] = editor_single
+
+                    method_options = ["pass", "rule"]
+                    current_method = (
+                        st.session_state["user_prompts"][idx].get("eval_method")
+                        or "pass"
+                    )
+                    current_keyword = (
+                        st.session_state["user_prompts"][idx].get("eval_keyword") or ""
+                    )
+                    eval_method_single = st.segmented_control(
+                        "평가 방법 선택 (eval_method)",
+                        options=method_options,
+                        default=(
+                            current_method
+                            if current_method in method_options
+                            else method_options[0]
+                        ),
+                        key=f"user_eval_method_select_single_{idx}",
                         label_visibility="collapsed",
                     )
                     st.session_state["user_prompts"][idx][
-                        "eval_keyword"
-                    ] = eval_keyword_single
+                        "eval_method"
+                    ] = eval_method_single
+                    if eval_method_single == "rule":
+                        eval_keyword_single = st.text_area(
+                            "평가 keyword 입력",
+                            height=68,
+                            value=current_keyword,
+                            key=f"user_eval_keyword_single_{idx}",
+                            label_visibility="collapsed",
+                        )
+                        st.session_state["user_prompts"][idx][
+                            "eval_keyword"
+                        ] = eval_keyword_single
 
-                if btn_update_usr:
-                    update_user_prompt(
-                        st.session_state["user_prompts"][idx]["id"],
-                        new_prompt=st.session_state["user_prompts"][idx]["prompt"],
-                        eval_method=st.session_state["user_prompts"][idx][
-                            "eval_method"
-                        ],
-                        eval_keyword=st.session_state["user_prompts"][idx].get(
-                            "eval_keyword", ""
-                        ),
+                    if btn_update_usr:
+                        update_user_prompt(
+                            st.session_state["user_prompts"][idx]["id"],
+                            new_prompt=st.session_state["user_prompts"][idx]["prompt"],
+                            eval_method=st.session_state["user_prompts"][idx][
+                                "eval_method"
+                            ],
+                            eval_keyword=st.session_state["user_prompts"][idx].get(
+                                "eval_keyword", ""
+                            ),
+                        )
+                        st.toast("User Prompt updated")
+                        time.sleep(0.7)
+                        st.rerun()
+                    user_single_text = (
+                        st.session_state["user_prompts"][idx]["prompt"]
+                        if prompt_count > 0
+                        else ""
                     )
-                    st.toast("User Prompt updated")
-                    time.sleep(0.7)
-                    st.rerun()
-                user_single_text = st.session_state["user_prompts"][idx]["prompt"]
+                else:
+                    user_single_text = ""
 
         ##########
 
@@ -674,24 +846,74 @@ def ai_settings_ui(project_id):
                     add_model("GPT-4o", project_id)
                     add_model("GPT-4o mini", project_id)
                     st.session_state["model_names"] = ["GPT-4o", "GPT-4o mini"]
+
+                if "model_1_name" not in st.session_state:
+                    st.session_state["model_1_name"] = st.session_state["model_names"][
+                        0
+                    ]
+                if "model_2_name" not in st.session_state:
+                    if len(st.session_state["model_names"]) > 1:
+                        st.session_state["model_2_name"] = st.session_state[
+                            "model_names"
+                        ][1]
+                    else:
+                        st.session_state["model_2_name"] = st.session_state[
+                            "model_names"
+                        ][0]
+
                 col1, col2 = st.columns(2)
                 with col1:
                     model_1 = st.selectbox(
                         "모델 선택 1",
                         st.session_state["model_names"],
-                        index=0,
+                        index=st.session_state["model_names"].index(
+                            st.session_state["model_1_name"]
+                        ),
                         key="model_selector_1",
                         label_visibility="collapsed",
                     )
+                    st.session_state["model_1_name"] = model_1
+
+                    if (
+                        model_1 == st.session_state["model_2_name"]
+                        and len(st.session_state["model_names"]) > 1
+                    ):
+                        available_models = [
+                            m for m in st.session_state["model_names"] if m != model_1
+                        ]
+                        if available_models:
+                            st.session_state["model_2_name"] = available_models[0]
+                            st.rerun()
+
                 with col2:
+                    available_models = st.session_state["model_names"]
+                    if len(available_models) > 1:
+                        available_models = [
+                            m for m in st.session_state["model_names"] if m != model_1
+                        ]
+
+                    if st.session_state["model_2_name"] in available_models:
+                        default_idx = available_models.index(
+                            st.session_state["model_2_name"]
+                        )
+                    else:
+                        default_idx = 0
+
                     model_2 = st.selectbox(
                         "모델 선택 2",
-                        st.session_state["model_names"],
-                        index=1 if len(st.session_state["model_names"]) > 1 else 0,
+                        available_models,
+                        index=min(default_idx, len(available_models) - 1),
                         key="model_selector_2",
                         label_visibility="collapsed",
                     )
+                    st.session_state["model_2_name"] = model_2
+
                 model_list = [model_1, model_2]
+
+                if model_1 == model_2:
+                    st.warning(
+                        "두 모델이 동일합니다. 다른 결과를 비교하려면 서로 다른 모델을 선택하세요."
+                    )
             else:
                 single_model = st.selectbox(
                     "모델 선택",

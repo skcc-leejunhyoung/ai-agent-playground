@@ -26,10 +26,26 @@ def init_db():
                 project_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT NOT NULL UNIQUE,
                 current_session_id INTEGER DEFAULT 0,
-                description TEXT DEFAULT ''
+                description TEXT DEFAULT '',
+                excluded_system_prompts TEXT DEFAULT '',
+                excluded_user_prompts TEXT DEFAULT ''
             );
         """
         )
+
+        try:
+            cur.execute(
+                "ALTER TABLE project ADD COLUMN excluded_system_prompts TEXT DEFAULT '';"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+        try:
+            cur.execute(
+                "ALTER TABLE project ADD COLUMN excluded_user_prompts TEXT DEFAULT '';"
+            )
+        except sqlite3.OperationalError:
+            pass
 
         cur.execute(
             """
@@ -121,6 +137,74 @@ def update_project_session_id(project_id, new_session_id):
         conn.commit()
 
 
+def update_project_excluded_prompts(
+    project_id, excluded_system_prompts=None, excluded_user_prompts=None
+):
+    """프로젝트의 제외된 프롬프트 ID 목록을 업데이트"""
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        fields = []
+        values = []
+
+        if excluded_system_prompts is not None:
+            fields.append("excluded_system_prompts = ?")
+            values.append(",".join(map(str, excluded_system_prompts)))
+
+        if excluded_user_prompts is not None:
+            fields.append("excluded_user_prompts = ?")
+            values.append(",".join(map(str, excluded_user_prompts)))
+
+        if not fields:
+            return
+
+        values.append(project_id)
+
+        sql = f"""
+            UPDATE project 
+            SET {', '.join(fields)}
+            WHERE project_id = ?
+        """
+        cur.execute(sql, values)
+        conn.commit()
+        print(f"[DB] 프로젝트 {project_id}의 제외된 프롬프트 목록 업데이트 완료")
+
+
+def get_project_excluded_prompts(project_id):
+    """프로젝트의 제외된 프롬프트 ID 목록을 조회"""
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT excluded_system_prompts, excluded_user_prompts
+                FROM project
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return [], []
+
+            excluded_system_prompts = (
+                [int(id) for id in row["excluded_system_prompts"].split(",") if id]
+                if row["excluded_system_prompts"]
+                else []
+            )
+            excluded_user_prompts = (
+                [int(id) for id in row["excluded_user_prompts"].split(",") if id]
+                if row["excluded_user_prompts"]
+                else []
+            )
+
+            return excluded_system_prompts, excluded_user_prompts
+    except (sqlite3.OperationalError, KeyError):
+        print("[DB] excluded_prompts 컬럼이 없거나 조회 중 오류 발생. 빈 목록 반환.")
+        return [], []
+
+
 def export_project_csv(project_id):
     """
     Export project data as CSV. Excludes all id columns and project_id.
@@ -129,13 +213,14 @@ def export_project_csv(project_id):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header 정의
     writer.writerow(
         [
             "table",  # 테이블 이름
             "project_project_name",  # project
             "project_current_session_id",  # project
             "project_description",  # project
+            "project_excluded_system_prompts",  # project
+            "project_excluded_user_prompts",  # project
             "system_prompt_prompt",  # system_prompt
             "user_prompt_prompt",  # user_prompt
             "user_prompt_eval_method",  # user_prompt
@@ -158,7 +243,8 @@ def export_project_csv(project_id):
         # PROJECT
         cur.execute(
             """
-            SELECT project_name, current_session_id, description
+            SELECT project_name, current_session_id, description,
+                   excluded_system_prompts, excluded_user_prompts
             FROM project
             WHERE project_id = ?
         """,
@@ -172,8 +258,8 @@ def export_project_csv(project_id):
                     proj_row["project_name"],
                     proj_row["current_session_id"],
                     proj_row["description"],
-                    "",
-                    "",
+                    proj_row["excluded_system_prompts"],
+                    proj_row["excluded_user_prompts"],
                     "",
                     "",
                     "",
@@ -205,8 +291,9 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    sp["prompt"],
                     "",
+                    "",
+                    sp["prompt"],
                     "",
                     "",
                     "",
@@ -238,7 +325,9 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    "",  # system_prompt_prompt 없음
+                    "",
+                    "",
+                    "",
                     up["prompt"],  # user_prompt_prompt
                     up["eval_method"],  # user_prompt_eval_method
                     up["eval_keyword"],  # user_prompt_eval_keyword
@@ -274,8 +363,9 @@ def export_project_csv(project_id):
                     "",
                     "",
                     "",
-                    m["model_name"],  # model_model_name
                     "",
+                    "",
+                    m["model_name"],  # model_model_name
                     "",
                     "",
                     "",
@@ -339,6 +429,8 @@ def import_project_csv(csv_file, project_name, project_description):
     print(f"[DB] 프로젝트 '{project_name}' 생성 완료 (ID: {project_id})")
 
     current_session_id = 0
+    excluded_system_prompts = ""
+    excluded_user_prompts = ""
 
     for row in reader:
         table = row["table"]
@@ -352,6 +444,8 @@ def import_project_csv(csv_file, project_name, project_description):
                 print(
                     f"[IMPORT] project_current_session_id 기본값 사용: {current_session_id}"
                 )
+            excluded_system_prompts = row.get("project_excluded_system_prompts", "")
+            excluded_user_prompts = row.get("project_excluded_user_prompts", "")
 
         elif table == "system_prompt":
             prompt = row["system_prompt_prompt"]
@@ -399,6 +493,20 @@ def import_project_csv(csv_file, project_name, project_description):
     print(
         f"[DB] 프로젝트 {project_id}의 current_session_id = {current_session_id} 업데이트 완료"
     )
+
+    if excluded_system_prompts or excluded_user_prompts:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE project 
+                SET excluded_system_prompts = ?,
+                    excluded_user_prompts = ?
+                WHERE project_id = ?
+                """,
+                (excluded_system_prompts, excluded_user_prompts, project_id),
+            )
+            conn.commit()
 
     return project_id
 
