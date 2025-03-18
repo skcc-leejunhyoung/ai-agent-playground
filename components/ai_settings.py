@@ -119,7 +119,6 @@ def ai_settings_ui(project_id):
             )
             if system_compare_toggle:
                 btn_generate_sys = False
-                btn_generate_usr = False
                 db_system_prompts = get_system_prompts(project_id)
                 if "excluded_system_prompt_ids" not in st.session_state:
                     st.session_state["excluded_system_prompt_ids"] = []
@@ -432,7 +431,6 @@ def ai_settings_ui(project_id):
                 "다중 User Prompt 활성화", key="user_toggle"
             )
             if user_compare_toggle:
-                btn_generate_sys = False
                 btn_generate_usr = False
                 db_user_prompts = get_user_prompts(project_id)
                 if "excluded_user_prompt_ids" not in st.session_state:
