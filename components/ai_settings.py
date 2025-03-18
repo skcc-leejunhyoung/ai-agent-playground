@@ -118,6 +118,8 @@ def ai_settings_ui(project_id):
                 "다중 System Prompt 활성화", key="system_toggle"
             )
             if system_compare_toggle:
+                btn_generate_sys = False
+                btn_generate_usr = False
                 db_system_prompts = get_system_prompts(project_id)
                 if "excluded_system_prompt_ids" not in st.session_state:
                     st.session_state["excluded_system_prompt_ids"] = []
@@ -430,6 +432,8 @@ def ai_settings_ui(project_id):
                 "다중 User Prompt 활성화", key="user_toggle"
             )
             if user_compare_toggle:
+                btn_generate_sys = False
+                btn_generate_usr = False
                 db_user_prompts = get_user_prompts(project_id)
                 if "excluded_user_prompt_ids" not in st.session_state:
                     st.session_state["excluded_user_prompt_ids"] = []
@@ -1055,9 +1059,6 @@ def ai_settings_ui(project_id):
             toast_msg.toast(f":green[모든 실행이 완료되었습니다!]", icon="🎉")
             time.sleep(1)
             st.rerun()
-
-        btn_generate_sys = False
-        btn_generate_usr = False
 
         if btn_generate_sys:
             generate_system_prompt_dialog(project_id)
