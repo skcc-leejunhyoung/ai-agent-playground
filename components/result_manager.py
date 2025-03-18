@@ -3,8 +3,8 @@
 import streamlit as st
 import time
 
-from agent.eval_agent import run_eval_agent
 from database import get_results_by_project
+from components.evaluation_and_improvement import evaluation_and_improvement
 
 
 ##########
@@ -33,7 +33,7 @@ def result_manager(project_id):
 
     option_map = {
         0: ":material/docs:",
-        1: ":material/wand_shine:",
+        1: ":material/Book_4_Spark:",
         2: ":material/arrow_back_iOS:",
         3: ":material/arrow_forward_iOS:",
     }
@@ -59,48 +59,14 @@ def result_manager(project_id):
             st.dataframe(reversed(current_session_results), use_container_width=True)
 
     if selection == 1:
-        st.toast("세션 평가 및 개선을 시작합니다...")
-
         current_session_results = [
             r for r in all_results if r["session_id"] == current_session_id
         ]
-
-        if not current_session_results:
-            st.warning(f"Session #{current_session_id}의 결과가 없습니다.")
-        else:
-            eval_state = run_eval_agent(current_session_results, project_id)
-
-            if eval_state and eval_state["best_prompts"] is not None:
-                st.success(f"Session #{current_session_id} 평가가 완료되었습니다!")
-
-                st.subheader("모델별 최적 시스템 프롬프트 결과")
-                st.dataframe(eval_state["best_prompts"], use_container_width=True)
-
-                improved_prompt = eval_state.get("improved_prompt")
-
-                if improved_prompt:
-                    st.subheader("개선된 시스템 프롬프트 및 모델 제안")
-                    st.markdown(
-                        f"""
-                        **모델명**: `{improved_prompt['model']}`  
-                        **개선된 시스템 프롬프트**:  
-                        ```
-                        {improved_prompt['improved_prompt']}
-                        ```
-                        """
-                    )
-                    st.markdown("**개선 이유 및 방향성**:  ")
-                    st.markdown(improved_prompt["reason"])
-                    st.session_state["selection_change_counter"] += 1
-                    st.session_state["selection"] = None
-                else:
-                    st.info("아직 개선된 프롬프트가 없습니다.")
-                    st.session_state["selection_change_counter"] += 1
-                    st.session_state["selection"] = None
-            else:
-                st.warning(f"Session #{current_session_id} 평가 결과가 없습니다.")
-                st.session_state["selection_change_counter"] += 1
-                st.session_state["selection"] = None
+        evaluation_and_improvement(
+            current_session_id, current_session_results, project_id
+        )
+        st.session_state["selection_change_counter"] += 1
+        st.session_state["selection"] = None
 
     if selection == 2:
         if current_session_id <= min_session_id:
