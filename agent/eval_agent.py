@@ -28,6 +28,7 @@ llm_gpt4o = AzureChatOpenAI(
     deployment_name=AOAI_DEPLOY_GPT4O,
     temperature=0.7,
     max_tokens=500,
+    model_kwargs={"response_format": {"type": "json_object"}},
 )
 
 
@@ -102,27 +103,30 @@ def run_eval_agent(results, project_id):
         system_prompt = top_row["system_prompt"]
         pass_count = top_row["eval_pass_O_count"]
 
-        format_instructions = system_prompt_parser.get_format_instructions()
+        system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다. 
+프롬프트 개선 요청에 따라 개선된 시스템 프롬프트와 개선 이유를 제공하세요.
+다음 JSON 형식으로 응답해주세요:
+{
+  "system_prompt": "개선된 시스템 프롬프트",
+  "reason": "프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
+}"""
 
         prompt_input = (
             f"다음 시스템 프롬프트를 사용하여 {model} 모델이 {pass_count}개의 성공을 거두었습니다.\n\n"
             f'시스템 프롬프트:\n"{system_prompt}"\n\n'
             "이 시스템 프롬프트를 개선하여 더 나은 결과를 얻기 위해 수정하거나 보완해 주세요.\n\n"
-            "개선한 이유를 상세하게 설명하고, 아래 포맷에 맞춰 작성해 주세요.\n\n"
-            f"{format_instructions}"
+            "개선한 이유를 상세하게 설명하고, JSON 형식으로 응답해주세요."
         )
 
         try:
             response = llm_gpt4o.invoke(
                 [
-                    SystemMessage(
-                        content="당신은 뛰어난 AI 프롬프트 엔지니어입니다. 아래 포맷을 따라 개선된 시스템 프롬프트와 개선 이유를 제안하세요."
-                    ),
+                    SystemMessage(content=system_message),
                     HumanMessage(content=prompt_input),
                 ]
             )
 
-            parsed_output = system_prompt_parser.parse(response.content)
+            parsed_output = SystemPromptOutput.model_validate_json(response.content)
             improved_prompt = parsed_output.system_prompt.strip()
             reason = parsed_output.reason.strip()
 
