@@ -256,8 +256,16 @@ def ai_settings_ui(project_id):
                                         st.session_state["system_select_2_idx"] = max(
                                             0, min(remove_idx, new_len - 1)
                                         )
+                                        st.session_state["system_select_1_idx"] = max(
+                                            0,
+                                            min(
+                                                st.session_state["system_select_1_idx"],
+                                                new_len - 1,
+                                            ),
+                                        )
                                         if (
-                                            st.session_state["system_select_1_idx"]
+                                            new_len > 1
+                                            and st.session_state["system_select_1_idx"]
                                             == st.session_state["system_select_2_idx"]
                                         ):
                                             st.session_state["system_select_1_idx"] = (
@@ -556,8 +564,16 @@ def ai_settings_ui(project_id):
                                 st.session_state["user_select_2_idx"] = max(
                                     0, min(remove_idx, new_len - 1)
                                 )
+                                st.session_state["user_select_1_idx"] = max(
+                                    0,
+                                    min(
+                                        st.session_state["user_select_1_idx"],
+                                        new_len - 1,
+                                    ),
+                                )
                                 if (
-                                    st.session_state["user_select_1_idx"]
+                                    new_len > 1
+                                    and st.session_state["user_select_1_idx"]
                                     == st.session_state["user_select_2_idx"]
                                 ):
                                     st.session_state["user_select_1_idx"] = (
