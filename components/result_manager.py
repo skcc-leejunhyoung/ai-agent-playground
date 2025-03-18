@@ -65,8 +65,8 @@ def result_manager(project_id):
         evaluation_and_improvement(
             current_session_id, current_session_results, project_id
         )
-        st.session_state["selection_change_counter"] += 1
-        st.session_state["selection"] = None
+        # st.session_state["selection_change_counter"] += 1
+        # st.session_state["selection"] = None
 
     if selection == 2:
         if current_session_id <= min_session_id:

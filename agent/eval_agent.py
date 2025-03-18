@@ -10,8 +10,6 @@ from langchain.schema import HumanMessage, SystemMessage
 from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
-from database import add_system_prompt
-
 
 ##########
 
@@ -127,8 +125,6 @@ def run_eval_agent(results, project_id):
             parsed_output = system_prompt_parser.parse(response.content)
             improved_prompt = parsed_output.system_prompt.strip()
             reason = parsed_output.reason.strip()
-
-            add_system_prompt(improved_prompt, state["project_id"])
 
             state["improved_prompt"] = {
                 "model": model,
