@@ -2,7 +2,7 @@ table,project_project_name,project_current_session_id,project_description,system
 project,default,0,This is auto-generated project.,,,,,,,,,,,,,
 system_prompt,,,,You are helpful assistant!,,,,,,,,,,,,
 system_prompt,,,,You are helpful assistant! Use CoT.,,,,,,,,,,,,
-user_prompt,,,,,"Harry James Potter, Hermione Jean Granger, Ronald Bilius Weasley 중 r이 가장 많이 포함된 이름이 뭐야?",pass,,,,,,,,,
+user_prompt,,,,,"Harry James Potter, Hermione Jean Granger, Ronald Bilius Weasley 중 e가 가장 많이 포함된 이름이 뭐야?",pass,,,,,,,,,
 user_prompt,,,,,'blueberry'를 거꾸로 써봐. ,rule,yrrebeulb,,,,,,,,
 user_prompt,,,,,'raspberry pi'에 들어간 r의 개수는 총 몇개야?,rule,3,,,,,,,,
 user_prompt,,,,,"공백 포함 102400 자 / 168419 byte

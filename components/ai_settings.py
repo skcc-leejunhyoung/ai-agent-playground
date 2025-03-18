@@ -1056,6 +1056,9 @@ def ai_settings_ui(project_id):
             time.sleep(1)
             st.rerun()
 
+        btn_generate_sys = False
+        btn_generate_usr = False
+
         if btn_generate_sys:
             generate_system_prompt_dialog(project_id)
 

@@ -302,7 +302,7 @@ if st.session_state.get("task_state") == "upload_csv":
         with st.form("csv_import_form"):
             new_project_name = st.text_input("새 프로젝트 이름")
             new_project_description = st.text_area("프로젝트 설명", height=68)
-            submit_button = st.form_submit_button("프로젝트 생성 및 CSV 가져오기")
+            submit_button = st.form_submit_button("Create Project from CSV")
 
             if submit_button:
                 existing_project = next(

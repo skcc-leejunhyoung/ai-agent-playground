@@ -98,6 +98,11 @@ def run_eval_agent(results, project_id):
     def suggest_improved_prompt(state):
         best_prompts = state["best_prompts"]
 
+        # best_prompts가 비어 있는지 확인
+        if best_prompts.empty:
+            print("[ERROR] 개선할 프롬프트가 없습니다.")
+            return state
+
         top_row = best_prompts.sort_values("eval_pass_O_count", ascending=False).iloc[0]
         model = top_row["model"]
         system_prompt = top_row["system_prompt"]
