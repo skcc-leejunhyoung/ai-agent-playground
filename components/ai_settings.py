@@ -5,6 +5,7 @@ from st_diff_viewer import diff_viewer
 from streamlit_monaco import st_monaco
 import uuid
 import time
+import json
 
 from model import stream_chat
 from agent.eval_tools import run_evaluation
@@ -22,7 +23,10 @@ from database import (
     update_project_excluded_prompts,
     get_project_excluded_prompts,
 )
-from agent.prompt_generation import generate_prompt_by_intention
+from agent.prompt_generation import (
+    generate_prompt_by_intention,
+    generate_prompt_by_intention_streaming,
+)
 
 
 ##########
@@ -1093,42 +1097,53 @@ def generate_system_prompt_dialog(project_id):
         )
 
     if generate_btn and user_intention:
-        with st.spinner("프롬프트 생성 중..."):
-            try:
-                generated = generate_prompt_by_intention(user_intention, "system")
+        output_container = st.empty()
+        result_data = None
+        full_text = ""
 
-                if generated and generated.get("prompt"):
-                    new_prompt = generated["prompt"]
-                    new_id = add_system_prompt(new_prompt, project_id)
+        try:
+            for token in generate_prompt_by_intention_streaming(
+                user_intention, "system"
+            ):
+                if token.startswith("__RESULT_DATA__:"):
+                    try:
+                        result_json = token.replace("__RESULT_DATA__:", "")
+                        result_data = json.loads(result_json)
+                    except Exception as e:
+                        print(f"JSON 파싱 오류: {e}")
+                    continue
 
-                    st.session_state["system_prompts"].append(
-                        {"id": new_id, "prompt": new_prompt}
-                    )
+                full_text += token
+                output_container.markdown(full_text)
 
-                    new_idx = len(st.session_state["system_prompts"]) - 1
+                if (
+                    "초기 프롬프트 초안 생성 완료" in full_text
+                    or "프롬프트 개선 완료" in full_text
+                    or "최종 프롬프트 확정 완료" in full_text
+                ):
+                    time.sleep(0.5)
+                    output_container.empty()
+                    full_text = ""
 
-                    st.session_state["system_single_idx"] = new_idx
+            if result_data and result_data.get("prompt"):
+                new_prompt = result_data["prompt"]
 
-                    st.success("시스템 프롬프트가 성공적으로 생성되었습니다!")
+                new_id = add_system_prompt(new_prompt, project_id)
 
-                    with st.expander("프롬프트 설계 근거", expanded=True):
-                        st.markdown(generated["reasoning"])
+                st.session_state["system_prompts"].append(
+                    {"id": new_id, "prompt": new_prompt}
+                )
 
-                    st.code(new_prompt, language="markdown")
+                new_idx = len(st.session_state["system_prompts"]) - 1
+                st.session_state["system_single_idx"] = new_idx
+                st.session_state["select_new_system_prompt"] = True
 
-                    st.session_state["select_new_system_prompt"] = True
+                st.success("시스템 프롬프트가 성공적으로 생성되었습니다!")
+            else:
+                st.error("프롬프트 생성에 실패했습니다.")
 
-                    if st.button(
-                        "닫기",
-                        use_container_width=True,
-                        type="secondary",
-                        key="close_sys_dialog",
-                    ):
-                        st.rerun()
-                else:
-                    st.error("프롬프트 생성에 실패했습니다.")
-            except Exception as e:
-                st.error(f"오류 발생: {str(e)}")
+        except Exception as e:
+            st.error(f"오류 발생: {str(e)}")
 
     elif generate_btn:
         st.warning("역할/동작 방식을 입력해주세요.")
@@ -1154,47 +1169,55 @@ def generate_user_prompt_dialog(project_id):
         )
 
     if generate_btn and user_intention:
-        with st.spinner("프롬프트 생성 중..."):
-            try:
-                generated = generate_prompt_by_intention(user_intention, "user")
+        output_container = st.empty()
+        result_data = None
+        full_text = ""
 
-                if generated and generated.get("prompt"):
-                    new_prompt = generated["prompt"]
-                    new_id = add_user_prompt(new_prompt, project_id)
+        try:
+            for token in generate_prompt_by_intention_streaming(user_intention, "user"):
+                if token.startswith("__RESULT_DATA__:"):
+                    try:
+                        result_json = token.replace("__RESULT_DATA__:", "")
+                        result_data = json.loads(result_json)
+                    except Exception as e:
+                        print(f"JSON 파싱 오류: {e}")
+                    continue
 
-                    st.session_state["user_prompts"].append(
-                        {
-                            "id": new_id,
-                            "prompt": new_prompt,
-                            "eval_method": "pass",
-                            "eval_keyword": "",
-                        }
-                    )
+                full_text += token
+                output_container.markdown(full_text)
 
-                    new_idx = len(st.session_state["user_prompts"]) - 1
+                if (
+                    "초기 프롬프트 초안 생성 완료" in full_text
+                    or "프롬프트 개선 완료" in full_text
+                    or "최종 프롬프트 확정 완료" in full_text
+                ):
+                    output_container.empty()
+                    full_text = ""
 
-                    st.session_state["user_single_idx"] = new_idx
+            if result_data and result_data.get("prompt"):
+                new_prompt = result_data["prompt"]
 
-                    st.success("사용자 프롬프트가 성공적으로 생성되었습니다!")
+                new_id = add_user_prompt(new_prompt, project_id)
 
-                    with st.expander("프롬프트 설계 근거", expanded=True):
-                        st.markdown(generated["reasoning"])
+                st.session_state["user_prompts"].append(
+                    {
+                        "id": new_id,
+                        "prompt": new_prompt,
+                        "eval_method": "pass",
+                        "eval_keyword": "",
+                    }
+                )
 
-                    st.code(new_prompt, language="markdown")
+                new_idx = len(st.session_state["user_prompts"]) - 1
+                st.session_state["user_single_idx"] = new_idx
+                st.session_state["select_new_user_prompt"] = True
 
-                    st.session_state["select_new_user_prompt"] = True
+                st.success("사용자 프롬프트가 성공적으로 생성되었습니다!")
+            else:
+                st.error("프롬프트 생성에 실패했습니다.")
 
-                    if st.button(
-                        "닫기",
-                        use_container_width=True,
-                        type="secondary",
-                        key="close_usr_dialog",
-                    ):
-                        st.rerun()
-                else:
-                    st.error("프롬프트 생성에 실패했습니다.")
-            except Exception as e:
-                st.error(f"오류 발생: {str(e)}")
+        except Exception as e:
+            st.error(f"오류 발생: {str(e)}")
 
     elif generate_btn:
         st.warning("의도/목적을 입력해주세요.")
