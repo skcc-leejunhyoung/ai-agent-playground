@@ -1120,9 +1120,13 @@ def generate_system_prompt_dialog(project_id):
         full_text = ""
 
         try:
-            with st.status("System 프롬프트 초안 생성 중...", expanded=True) as status:
+            with st.status("시스템 프롬프트 생성 중...", expanded=True) as status:
+                # 상태 업데이트 콜백 함수
+                def update_status_callback(message, state="running"):
+                    status.update(label=message, state=state)
+
                 for token in generate_prompt_by_intention_streaming(
-                    user_intention, "system"
+                    user_intention, "system", update_status_callback
                 ):
                     if token.startswith("__RESULT_DATA__:"):
                         try:
@@ -1134,21 +1138,6 @@ def generate_system_prompt_dialog(project_id):
 
                     full_text += token
                     output_container.markdown(full_text)
-
-                    if "<|eot_id|>초안<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(label="초기 프롬프트 개선중...", state="running")
-                        full_text = ""
-                    elif "<|eot_id|>개선<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(label="최종 프롬프트 확정중...", state="running")
-                        full_text = ""
-                    elif "<|eot_id|>최종<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(
-                            label="System 프롬프트 생성 완료", state="complete"
-                        )
-                        full_text = ""
 
             if result_data and result_data.get("prompt"):
                 new_prompt = result_data["prompt"]
@@ -1163,7 +1152,6 @@ def generate_system_prompt_dialog(project_id):
                 st.session_state["system_single_idx"] = new_idx
                 st.session_state["select_new_system_prompt"] = True
 
-                st.success("시스템 프롬프트가 성공적으로 생성되었습니다!")
             else:
                 st.error("프롬프트 생성에 실패했습니다.")
 
@@ -1172,6 +1160,9 @@ def generate_system_prompt_dialog(project_id):
 
     elif generate_btn:
         st.warning("역할/동작 방식을 입력해주세요.")
+
+    if st.button("close", use_container_width=True):
+        st.rerun()
 
 
 @st.dialog("User Prompt 생성")
@@ -1199,9 +1190,13 @@ def generate_user_prompt_dialog(project_id):
         full_text = ""
 
         try:
-            with st.status("User 프롬프트 초안 생성 중...", expanded=True) as status:
+            with st.status("유저 프롬프트 생성 중...", expanded=True) as status:
+                # 상태 업데이트 콜백 함수
+                def update_status_callback(message, state="running"):
+                    status.update(label=message, state=state)
+
                 for token in generate_prompt_by_intention_streaming(
-                    user_intention, "user"
+                    user_intention, "user", update_status_callback
                 ):
                     if token.startswith("__RESULT_DATA__:"):
                         try:
@@ -1213,19 +1208,6 @@ def generate_user_prompt_dialog(project_id):
 
                     full_text += token
                     output_container.markdown(full_text)
-
-                    if "<|eot_id|>초안<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(label="초기 프롬프트 개선중...", state="running")
-                        full_text = ""
-                    elif "<|eot_id|>개선<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(label="최종 프롬프트 확정중...", state="running")
-                        full_text = ""
-                    elif "<|eot_id|>최종<|eot_id|>" in full_text:
-                        output_container.empty()
-                        status.update(label="User 프롬프트 확정 완료", state="complete")
-                        full_text = ""
 
             if result_data and result_data.get("prompt"):
                 new_prompt = result_data["prompt"]
@@ -1245,7 +1227,6 @@ def generate_user_prompt_dialog(project_id):
                 st.session_state["user_single_idx"] = new_idx
                 st.session_state["select_new_user_prompt"] = True
 
-                st.success("사용자 프롬프트가 성공적으로 생성되었습니다!")
             else:
                 st.error("프롬프트 생성에 실패했습니다.")
 
@@ -1254,3 +1235,6 @@ def generate_user_prompt_dialog(project_id):
 
     elif generate_btn:
         st.warning("의도/목적을 입력해주세요.")
+
+    if st.button("close", use_container_width=True):
+        st.rerun()
