@@ -1,4 +1,5 @@
 streamlit
+streamlit-server-state  
 st-diff-viewer
 streamlit_monaco
 markdown
