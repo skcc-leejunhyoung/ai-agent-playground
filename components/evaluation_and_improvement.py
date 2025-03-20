@@ -88,6 +88,6 @@ def evaluation_and_improvement(
             st.markdown(":orange[**개선 이유 및 방향성**]  ")
             st.markdown(improved_prompt["reason"])
         else:
-            st.info("아직 개선된 프롬프트가 없습니다.")
+            st.info("개선할 프롬프트가 없습니다.")
     else:
         st.warning(f"Session #{current_session_id} 평가 결과가 없습니다.")
