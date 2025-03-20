@@ -274,7 +274,7 @@ async def run_prompt_generation_agent_async(
         rg = state["role_guidance"]
         oe = state["output_example"]
         rs = state["role_summary"]
-        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안이 개괄식으로 표현된 평가기준을 완벽하게 만족하는지 평가해주세요. 평가기준을 완벽하게 만족한다면 is_complete 를 True로 설정해주세요. 평가기준을 만족하지 못했다면 is_complete 를 False로 설정하고 만족하지 못한 평가기준 항목을 수정하지말고 missing_items에 그대로 작성해주세요."
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안이 개괄식으로 표현된 평가기준을 완벽하게 만족하는지 평가해주세요. 평가기준을 완벽하게 만족한다면 is_complete 를 True로 설정하고 missing_items를 빈 리스트로 반환해주세요. 평가기준을 만족하지 못했다면 is_complete 를 False로 설정하고 만족하지 못한 평가기준 항목을 수정하지말고 missing_items에 그대로 작성해주세요."
         user_msg = (
             f"프롬프트 초안 - 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, 예시:{oe['output_example']}"
             f"평가 기준:{rs['summary']}"
