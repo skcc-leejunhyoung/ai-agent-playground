@@ -305,18 +305,32 @@ async def run_prompt_generation_agent_async(
     async def node_system_6_final(state: dict):
         """
         6번 노드: 최종 시스템 프롬프트 생성
+        마크다운 형식으로 role, instructions, information, output_example을 포맷팅
         """
         rg = state["role_guidance"]
         oe = state["output_example"]
-        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 유저 프롬프트에 전달된 정보를 빠짐없이 system_prompt 에 마크다운 형태로 작성하세요."
-        user_msg = (
-            f"역할:{rg['role']}, 지시:{rg['instructions']}, "
-            f"정보:{rg['information']}, 예시:{oe['output_example']}"
-        )
-        async for part in parse_chat_streaming_gen(
-            system_msg, user_msg, FinalSystemPromptOutput
-        ):
-            yield f"__NODE6_PARTIAL__:{part}"
+        number_of_instructions = len(rg["instructions"].split("\n"))
+
+        # 마크다운 형식으로 포맷팅
+        system_prompt = f"""## You must Act as
+{rg['role']}
+
+## MUST FOLLOW these {number_of_instructions} Instructions below
+{rg['instructions']}
+
+## Information
+{rg['information']}
+
+## Output Example
+{oe['output_example']}"""
+
+        result = {
+            "system_prompt": system_prompt,
+            "reasoning": "시스템 프롬프트가 마크다운 형식으로 성공적으로 생성되었습니다.",
+        }
+
+        # FinalSystemPromptOutput 형식으로 직접 반환
+        yield f"__NODE6_PARTIAL__:__FINAL_PARSE__:{json.dumps(result)}"
 
     ################################
     # 상태 저장용 dict
