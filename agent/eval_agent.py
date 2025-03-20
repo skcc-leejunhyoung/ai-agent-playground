@@ -49,6 +49,22 @@ system_prompt_parser = PydanticOutputParser(pydantic_object=SystemPromptOutput)
 ##########
 
 
+class AnalysisOutput(BaseModel):
+    failure_analysis: str = Field(
+        ..., description="실패 사례들의 공통적인 문제점과 패턴 분석"
+    )
+    improvement_techniques: str = Field(
+        ..., description="적용할 수 있는 프롬프팅 기법들과 그 이유"
+    )
+
+
+class ImprovementOutput(BaseModel):
+    system_prompt: str = Field(..., description="개선된 시스템 프롬프트")
+    reason: str = Field(
+        ..., description="프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
+    )
+
+
 def run_eval_agent(results, project_id):
     if not results:
         print("⚠️ 평가할 결과가 없습니다.")
@@ -80,65 +96,143 @@ def run_eval_agent(results, project_id):
 
     def find_best_prompts(state):
         df = state["df"]
-        passed_df = df[df["eval_pass"] == "O"]
-        grouped = (
-            passed_df.groupby(["model", "system_prompt"])
+        total_counts = (
+            df.groupby(["model", "system_prompt"])
+            .size()
+            .reset_index(name="total_count")
+        )
+        pass_counts = (
+            df[df["eval_pass"] == "O"]
+            .groupby(["model", "system_prompt"])
             .size()
             .reset_index(name="eval_pass_O_count")
         )
+
+        # 두 데이터프레임 병합
+        merged_df = pd.merge(
+            total_counts, pass_counts, on=["model", "system_prompt"], how="left"
+        )
+        merged_df["success_rate"] = (
+            merged_df["eval_pass_O_count"] / merged_df["total_count"]
+        ) * 100
+
+        # 성공 횟수로 정렬하고 각 모델별 최고 성과 프롬프트 선택
         best_prompts = (
-            grouped.sort_values("eval_pass_O_count", ascending=False)
+            merged_df.sort_values("eval_pass_O_count", ascending=False)
             .groupby("model")
             .first()
             .reset_index()
         )
+
+        # needs_improvement 필드 추가
+        best_prompts["needs_improvement"] = best_prompts["success_rate"] < 90
+
         state["best_prompts"] = best_prompts
         return state
 
     def suggest_improved_prompt(state):
         best_prompts = state["best_prompts"]
+        df = state["df"]
 
-        # best_prompts가 비어 있는지 확인
         if best_prompts.empty:
             print("[ERROR] 개선할 프롬프트가 없습니다.")
             return state
 
         top_row = best_prompts.sort_values("eval_pass_O_count", ascending=False).iloc[0]
+
+        if not top_row["needs_improvement"]:
+            print(
+                f"[INFO] 현재 프롬프트의 성공률이 {top_row['success_rate']:.1f}%로 충분히 높아 개선이 필요하지 않습니다."
+            )
+            return state
+
         model = top_row["model"]
         system_prompt = top_row["system_prompt"]
-        pass_count = top_row["eval_pass_O_count"]
 
-        system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다. 
-프롬프트 개선 요청에 따라 개선된 시스템 프롬프트와 개선 이유를 제공하세요.
-다음 JSON 형식으로 응답해주세요:
-{
-  "system_prompt": "개선된 시스템 프롬프트",
-  "reason": "프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
-}"""
+        # 1단계: 실패 사례 분석
+        failed_cases = df[
+            (df["model"] == model)
+            & (df["system_prompt"] == system_prompt)
+            & (df["eval_pass"] == "X")
+        ][["user_prompt", "result", "eval_keyword"]].to_dict("records")
 
-        prompt_input = (
-            f"다음 시스템 프롬프트를 사용하여 {model} 모델이 {pass_count}개의 성공을 거두었습니다.\n\n"
-            f'시스템 프롬프트:\n"{system_prompt}"\n\n'
-            "이 시스템 프롬프트를 개선하여 더 나은 결과를 얻기 위해 수정하거나 보완해 주세요.\n\n"
-            "개선한 이유를 상세하게 설명하고, JSON 형식으로 응답해주세요."
+        analysis_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
+실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요."""
+
+        analysis_input = (
+            f"다음은 현재 시스템 프롬프트와 실패한 케이스들입니다:\n\n"
+            f"현재 시스템 프롬프트:\n{system_prompt}\n\n"
+            f"실패 케이스들:\n"
         )
 
+        for i, case in enumerate(failed_cases, 1):
+            analysis_input += (
+                f"\n케이스 {i}:\n"
+                f"사용자 입력: {case['user_prompt']}\n"
+                f"AI 응답: {case['result']}\n"
+                f"실패 이유: {case['eval_keyword']}\n"
+            )
+
         try:
-            response = llm_gpt4o.invoke(
+            # 1단계: 실패 분석 및 프롬프팅 기법 추천
+            analysis_response = llm_gpt4o.invoke(
                 [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
+                    SystemMessage(content=analysis_system_message),
+                    HumanMessage(content=analysis_input),
+                ],
+                response_format=AnalysisOutput.model_json_schema(),
+            )
+            analysis_result = AnalysisOutput.parse_raw(analysis_response.content)
+
+            # RAG로 프롬프팅 기법 증강
+            prompting_techniques_query = f"""
+            프롬프팅 기법 추천:
+            {analysis_result.improvement_techniques}
+            이와 관련된 구체적인 프롬프팅 기법과 예시
+            """
+
+            from agent.rag_module import search_similar_chunks
+
+            relevant_docs = search_similar_chunks(prompting_techniques_query, top_k=3)
+
+            additional_techniques = "\n\n".join(
+                [
+                    f"관련 프롬프팅 기법 참고:\n{doc.page_content}"
+                    for doc in relevant_docs
                 ]
             )
 
-            parsed_output = SystemPromptOutput.model_validate_json(response.content)
-            improved_prompt = parsed_output.system_prompt.strip()
-            reason = parsed_output.reason.strip()
+            # 2단계: 개선된 프롬프트 생성
+            improvement_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
+실패 분석 결과와 추천된 프롬프팅 기법을 바탕으로, 개선된 시스템 프롬프트를 생성해주세요."""
+
+            improvement_input = (
+                f"현재 시스템 프롬프트:\n{system_prompt}\n\n"
+                f"실패 분석 결과:\n{analysis_result.failure_analysis}\n\n"
+                f"추천된 프롬프팅 기법:\n{analysis_result.improvement_techniques}\n\n"
+                f"추가 참고할 프롬프팅 기법:\n{additional_techniques}\n\n"
+                f"위 분석 결과와 추천된 프롬프팅 기법을 적용하여 개선된 시스템 프롬프트를 생성해주세요."
+            )
+
+            improvement_response = llm_gpt4o.invoke(
+                [
+                    SystemMessage(content=improvement_system_message),
+                    HumanMessage(content=improvement_input),
+                ],
+                response_format=ImprovementOutput.model_json_schema(),
+            )
+            improvement_result = ImprovementOutput.model_validate_json(
+                improvement_response.content
+            )
 
             state["improved_prompt"] = {
                 "model": model,
-                "improved_prompt": improved_prompt,
-                "reason": reason,
+                "original_prompt": system_prompt,
+                "improved_prompt": improvement_result.system_prompt,
+                "failure_analysis": analysis_result.failure_analysis,
+                "improvement_techniques": analysis_result.improvement_techniques,
+                "additional_techniques": additional_techniques,
+                "reason": improvement_result.reason,
             }
 
         except Exception as e:
@@ -155,14 +249,18 @@ def run_eval_agent(results, project_id):
                 f"Model: {row['model']}\n"
                 f"Best System Prompt: {row['system_prompt']}\n"
                 f"Pass Count: {row['eval_pass_O_count']}\n"
+                f"Success Rate: {row['success_rate']:.1f}%\n"
             )
 
         if state["improved_prompt"]:
             improved = state["improved_prompt"]
+            print("\n--프롬프트 개선 분석--")
+            print(f"\n실패 사례 분석:\n{improved['failure_analysis']}")
+            print(f"\n제안된 프롬프팅 기법:\n{improved['improvement_techniques']}")
             print(
-                f"\n개선된 시스템 프롬프트 ({improved['model']})\n➡️ {improved['improved_prompt']}\n"
-                f"개선 이유: {improved['reason']}\n"
+                f"\n개선된 시스템 프롬프트 ({improved['model']}):\n➡️ {improved['improved_prompt']}"
             )
+            print(f"\n개선 이유:\n{improved['reason']}\n")
 
         return state
 
