@@ -4,7 +4,7 @@ import os
 import json
 import asyncio
 import queue as queue_module
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Generator
 
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from concurrent.futures import ThreadPoolExecutor
@@ -606,7 +606,7 @@ async def run_prompt_generation_agent_async(
 
 def run_prompt_generation_agent_streaming(
     user_intention: str, status_callback: Optional[callable] = None
-) -> AsyncGenerator[str, None]:
+) -> Generator[str, None, None]:
     """
     동기 -> async generator consume
     """
@@ -632,7 +632,7 @@ def run_prompt_generation_agent_streaming(
 
 def generate_system_prompt_by_intention_streaming(
     user_intention: str, status_callback: Optional[callable] = None
-) -> AsyncGenerator[str, None]:
+) -> Generator[str, None, None]:
     """
     외부에서 직접 호출할 수 있는 진입점.
     예시:
@@ -640,4 +640,5 @@ def generate_system_prompt_by_intention_streaming(
             # token 별로 스트리밍
             ...
     """
-    return run_prompt_generation_agent_streaming(user_intention, status_callback)
+    for token in run_prompt_generation_agent_streaming(user_intention, status_callback):
+        yield token
