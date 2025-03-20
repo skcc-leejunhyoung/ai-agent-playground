@@ -8,3 +8,7 @@ dotenv
 langgraph
 langchain
 langchain_openai
+bs4
+nltk
+konlpy
+qdrant-client
