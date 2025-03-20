@@ -547,9 +547,6 @@ async def run_prompt_generation_agent_async(
     is_complete = False
 
     while not is_complete and coverage_iteration < max_coverage_iterations:
-        print(state["role_guidance"])
-        print(state["output_example"])
-        print(state["role_summary"])
         coverage_iteration += 1
         update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 시작", "info")
 
@@ -594,12 +591,15 @@ async def run_prompt_generation_agent_async(
 
         # 평가 결과 상태 업데이트
         if node5_parsed_json:
+            print(f"node5_parsed_json: {node5_parsed_json}")
             state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
                 "is_complete", False
             )
+            print(f"state updated: {state["coverage_evaluation"]["is_complete"]}")
             state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
                 "missing_items", []
             )
+            print(f"state updated: {state["coverage_evaluation"]["missing_items"]}")
             is_complete = state["coverage_evaluation"]["is_complete"]
 
         # 커버리지가 완전하면 루프 종료
