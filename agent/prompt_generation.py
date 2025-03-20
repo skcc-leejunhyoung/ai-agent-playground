@@ -595,11 +595,11 @@ async def run_prompt_generation_agent_async(
             state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
                 "is_complete", False
             )
-            print(f"state updated: {state["coverage_evaluation"]["is_complete"]}")
+            print(f'state updated: {state["coverage_evaluation"]["is_complete"]}')
             state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
                 "missing_items", []
             )
-            print(f"state updated: {state["coverage_evaluation"]["missing_items"]}")
+            print(f'state updated: {state["coverage_evaluation"]["missing_items"]}')
             is_complete = state["coverage_evaluation"]["is_complete"]
 
         # 커버리지가 완전하면 루프 종료
