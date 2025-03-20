@@ -1,633 +1,743 @@
 # agent/prompt_generation.py
 
-from langgraph.graph import StateGraph
 import os
-from dotenv import load_dotenv
 import json
+import asyncio
+import time
+from typing import List, Optional, AsyncGenerator, Generator
 
-from langchain_openai import AzureChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
-from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-from langchain.callbacks.base import BaseCallbackHandler
-import threading
-import queue as queue_module
+from dotenv import load_dotenv
 
+from openai import AzureOpenAI
+import pydantic
+from pydantic import BaseModel
 
-##########
-
-
+#############
 load_dotenv()
 
-AOAI_API_KEY = os.getenv("AOAI_API_KEY")
-AOAI_ENDPOINT = os.getenv("AOAI_ENDPOINT")
-AOAI_DEPLOY_GPT4O = os.getenv("AOAI_DEPLOY_GPT4O")
-AOAI_API_VERSION = "2024-02-15-preview"
+AZURE_OPENAI_API_KEY = os.getenv("AOAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AOAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT_NAME = os.getenv("AOAI_DEPLOY_GPT4O")
+AZURE_OPENAI_API_VERSION = "2024-10-21"
 
-llm_gpt4o = AzureChatOpenAI(
-    openai_api_key=AOAI_API_KEY,
-    azure_endpoint=AOAI_ENDPOINT,
-    api_version=AOAI_API_VERSION,
-    deployment_name=AOAI_DEPLOY_GPT4O,
-    temperature=0.7,
-    max_tokens=1000,
-    model_kwargs={"response_format": {"type": "json_object"}},
+client = AzureOpenAI(
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=AZURE_OPENAI_API_VERSION,
 )
 
-
-##########
-
-
-class PromptOutput(BaseModel):
-    system_prompt: str = Field(
-        ..., description="AI 응답을 위한 최적화된 시스템 프롬프트입니다."
-    )
-    user_prompt_template: str = Field(
-        ..., description="사용자 입력을 포함할 수 있는 사용자 프롬프트 템플릿입니다."
-    )
-    reasoning: str = Field(
-        ...,
-        description="이 프롬프트들이 사용자 의도를 어떻게 효과적으로 반영하는지에 대한 설명입니다. markdown 형식으로 작성해주세요.",
-    )
+################################
+# 1) Pydantic Models
+################################
 
 
-prompt_parser = PydanticOutputParser(pydantic_object=PromptOutput)
+class OpenAiResponseFormatGenerator(pydantic.json_schema.GenerateJsonSchema):
+    def generate(self, schema, mode="validation"):
+        json_schema = super().generate(schema, mode=mode)
+        json_schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": json_schema.pop("title"),
+                "schema": json_schema,
+            },
+        }
+        return json_schema
 
 
-##########
+class StrictBaseModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    @classmethod
+    def model_json_schema(cls, **kwargs):
+        return super().model_json_schema(
+            schema_generator=OpenAiResponseFormatGenerator, **kwargs
+        )
 
 
-def run_prompt_generation_agent(user_intention, user_sys_params=None):
+class RoleGuidanceOutput(StrictBaseModel):
+    role: str
+    instructions: str
+    information: str
+
+
+class OutputExampleOutput(StrictBaseModel):
+    output_example: str
+
+
+class RoleSummaryOutput(StrictBaseModel):
+    summary: List[str]
+
+
+class ConflictEvaluationOutput(StrictBaseModel):
+    has_conflicts: bool
+    conflicts: Optional[List[str]] = None
+    resolution: Optional[str] = None
+
+
+class ConflictResolutionOutput(StrictBaseModel):
+    role: str
+    instructions: str
+    information: str
+    output_example: str
+
+
+class CoverageEvaluationOutput(StrictBaseModel):
+    is_complete: bool
+    missing_items: Optional[List[str]] = None
+
+
+class CoverageFixOutput(StrictBaseModel):
+    role: str
+    instructions: str
+    information: str
+    output_example: str
+
+
+class FinalSystemPromptOutput(StrictBaseModel):
+    system_prompt: str
+    reasoning: str
+
+
+################################
+# 2) 노드 처리용 비동기 + 스트리밍 "Generator" 함수
+################################
+
+
+async def parse_chat_streaming_gen(
+    system_content: str,
+    user_content: str,
+    pydantic_model,
+    max_retries: int = 3,
+) -> AsyncGenerator[str, None]:
     """
-    사용자 의도(user_intention)와 선택적 시스템 파라미터를 받아
-    최적화된 프롬프트를 생성하는 에이전트를 실행합니다.
+    실제 LLM 스트리밍을 async generator로 만들어,
+      1) 토큰을 partial로 yield
+      2) 전체가 끝나면 pydantic parse 시도 → 성공하면 최종 JSON을 __STEP_FINAL__ 형식으로 yield
+         (파싱 실패 시 raw 출력 or 에러 메시지)
 
-    Args:
-        user_intention (str): 사용자의 목적과 원하는 AI 응답 유형에 대한 설명
-        user_sys_params (str, optional): 생성할 프롬프트 유형 ("user" 또는 "system")
-                                        기본값은 "system"
+    호출 측에서는:
+        async for output in parse_chat_streaming_gen(...):
+            yield output
+    """
+    for attempt in range(max_retries):
+        try:
+            # Pydantic 모델로부터 JSON Schema 생성
+            schema = pydantic_model.model_json_schema()
 
-    Returns:
-        dict: 최종 생성된 프롬프트와 분석 결과를 포함하는 상태 딕셔너리
+            # AzureOpenAI Chat Completions API 호출
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format=schema,
+                stream=True,
+            )
+
+            full_text = ""
+            # 1) partial 스트리밍
+            for chunk in response:
+                if not hasattr(chunk, "choices") or len(chunk.choices) == 0:
+                    continue
+                delta_obj = chunk.choices[0].delta
+                if hasattr(delta_obj, "content") and delta_obj.content is not None:
+                    token = delta_obj.content
+                    full_text += token
+                    yield token  # partial 토큰
+
+            # 2) 최종 parse 시도
+            try:
+                parsed_json = json.loads(full_text)
+                # pydantic parse
+                parsed_result = pydantic_model.parse_obj(parsed_json)
+                # 성공하면 "__FINAL_PARSE__:{...}" 형식으로 내보냄
+                yield f"__FINAL_PARSE__:{json.dumps(parsed_json)}"
+                yield f"__PARSED_OBJECT__:{parsed_result}"
+            except Exception as e:
+                # parse 실패
+                yield f"__FINAL_PARSE_ERROR__:{str(e)}"
+            return
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # 재시도 전에 잠시 쉼
+                await asyncio.sleep(0.2)
+                continue
+            else:
+                yield f"__FINAL_PARSE_ERROR__:{str(e)}"
+                return
+
+
+################################
+# 3) 시스템 프롬프트 생성 메인 로직
+################################
+
+
+async def run_prompt_generation_agent_async(
+    user_intention: str,
+    status_callback: Optional[callable] = None,
+) -> AsyncGenerator[str, None]:
+    """
+    시스템 프롬프트 생성 프로세스:
+      1. (병렬) Node1(역할/지시사항/정보 구분), Node2(출력 예시), Node3(역할 요약) → 결과가 모두 끝나면
+         *1,2,3 결과 종합 정제*
+      2. (순차) Node4(충돌 평가) → (필요 시 Node4.1 충돌 해결) → Pass될 때까지
+      3. (순차) Node5(커버리지 평가) → (필요 시 Node5.1 보완) → Pass될 때까지
+      4. (순차) Node6(최종 시스템 프롬프트 출력)
+
+    각 노드 함수는 parse_chat_streaming_gen(...)을 호출해 partial 토큰을 yield 하고,
+    parse 완료 시점에 "__FINAL_PARSE__:{...}"가 나옴. 이를 상위에서 잡아 state에 반영.
     """
 
-    if user_sys_params is None or user_sys_params not in ["user", "system"]:
-        user_sys_params = "system"
+    def update_status(msg: str, state="running"):
+        if status_callback:
+            status_callback(msg, state)
+        print(f"[STATUS] {msg} ({state})")
 
+    ################################
+    # 노드 함수들 (각각 parse_chat_streaming_gen 호출)
+    ################################
+
+    async def node_system_1_role_guidance(state: dict):
+        """
+        1번 노드: 역할 / 지시사항 / 정보 구분
+        """
+        system_msg = '##Role: "I am a versatile system designed to assist in providing structured and accurate responses."\n##Instructions: "Interpret the user\'s inputs, maintain clarity, and adhere to professional communication standards."\n##Information: "Focus on understanding and addressing the given instructions effectively, providing informative and precise outcomes."\n\nPlease provide input in the format provided above to ensure the intended task is clear.'
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, RoleGuidanceOutput
+        ):
+            yield f"__NODE1_PARTIAL__:{part}"
+
+    async def node_system_2_output_example(state: dict):
+        """
+        2번 노드: 출력 예시 생성
+        """
+        system_msg = "You are an assistant specialized in generating 'example outputs' for specified roles or functionalities. Analyze the user's provided role or functionality description, understand the specified intent and scope, and craft a well-structured and relevant example output adhering to the defined role or task."
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, OutputExampleOutput
+        ):
+            yield f"__NODE2_PARTIAL__:{part}"
+
+    async def node_system_3_role_summary(state: dict):
+        """
+        3번 노드: 역할 요약
+        """
+        system_msg = "You refine, condense, and clarify user-provided definitions or instructions into concise and precise descriptions."
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, RoleSummaryOutput
+        ):
+            yield f"__NODE3_PARTIAL__:{part}"
+
+    async def node_system_4_conflict_evaluation(state: dict):
+        """
+        4번 노드: 충돌 평가
+        """
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        system_msg = "##role : Evaluator of system prompt coherence ##instructions : 1. Evaluate whether the specified roles, instructions, information, input examples, and output examples in the created system prompt have any contradictions, informational conflicts, or unclear directives. 2. Upon analyzing user-provided content categorized into roles, instructions, data, inputs, and outputs, assess for coherency, identifying any contradictions or inconsistencies among them. 3. Ensure a thorough evaluation process and resolve identified mismatches, ensuring overall harmony and accuracy in the provided content. ##information :  Focus on systematic evaluation of potential conflicts or unclear instructions between the components of a given system prompt, ensuring a coherent and seamless design for effective use. ##output_example :  Checking Alignment of Attributes\n\nTo ensure the entailed segments: ##role, ##instructions, ##information, ##input examples, and ##output examples are consistent and do not contradict one another, follow the procedure below:\n\n1. Analyze each segment to identify core requirements and intentions.\n2. Compare instructions against the provided role definition; ensure all tasks are feasible within the specified role.\n3. Validate information relevancy and harmony with the role's goals.\n4. Cross-reference examples (both input and output) with structured information and instructions for alignment.\n\nExample analysis:\n- Role: Data summarizer.\n- Instructions: Create concise summaries of provided text.\n- Information: Provides a maximum of 200-word summary.\n- Input Example: A 500-word news article.\n- Output Example: a 150-word summary.\n\nAfter evaluation, the segments all align, showing no contradiction. "
+        user_msg = (
+            f"(역할:{rg['role']}, 지시:{rg['instructions']}, "
+            f"정보:{rg['information']}, 예시:{oe['output_example']})"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, ConflictEvaluationOutput
+        ):
+            yield f"__NODE4_PARTIAL__:{part}"
+
+    async def node_system_4_1_conflict_resolution(state: dict):
+        """
+        4.1번 노드: 충돌 해결
+        """
+        ce = state["conflict_evaluation"]
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        system_msg = "[시스템] Node4.1: 충돌 해결"
+        user_msg = (
+            f"충돌:{ce['conflicts']}, 해결안:{ce['resolution']}, "
+            f"현재 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
+            f"출력 예시:{oe['output_example']}"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, ConflictResolutionOutput
+        ):
+            yield f"__NODE4_1_PARTIAL__:{part}"
+
+    async def node_system_5_coverage_evaluation(state: dict):
+        """
+        5번 노드: 커버리지 평가
+        """
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        rs = state["role_summary"]
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안이 개괄식으로 표현된 평가기준을 완벽하게 만족하는지 평가해주세요. 평가기준을 완벽하게 만족한다면 is_complete 를 True로 설정하고 missing_items를 빈 리스트로 반환해주세요. 평가기준을 만족하지 못했다면 is_complete 를 False로 설정하고 만족하지 못한 평가기준 항목을 수정하지말고 missing_items에 그대로 작성해주세요."
+        user_msg = (
+            f"프롬프트 초안 - 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, 예시:{oe['output_example']}"
+            f"평가 기준:{rs['summary']}"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, CoverageEvaluationOutput
+        ):
+            yield f"__NODE5_PARTIAL__:{part}"
+
+    async def node_system_5_1_coverage_fix(state: dict):
+        """
+        5.1번 노드: 커버리지 보완
+        """
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        ce = state["coverage_evaluation"]
+        rs = state["role_summary"]
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안은 평가기준 중 평가 기준 미달 항목이 있습니다. 이 항목을 보완하여 완벽한 시스템 프롬프트를 만들어주세요. 시스템 프롬프트 초안의 내용을 그대로 보존하고 평가 기준 미달 항목만 보완해주세요."
+        user_msg = (
+            f"평가 기준 미달:{ce['missing_items']}, 전체 평가기준 :{rs['summary']}, "
+            f"프롬프트 초안 - 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, 예시:{oe['output_example']}"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, CoverageFixOutput
+        ):
+            yield f"__NODE5_1_PARTIAL__:{part}"
+
+    async def node_system_6_final(state: dict):
+        """
+        6번 노드: 최종 시스템 프롬프트 생성
+        마크다운 형식으로 role, instructions, information, output_example을 포맷팅
+        """
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        number_of_instructions = len(rg["instructions"].split("\n"))
+
+        # 마크다운 형식으로 포맷팅
+        system_prompt = f"""## You must Act as
+{rg['role']}
+
+## MUST FOLLOW these {number_of_instructions} Instructions below
+{rg['instructions']}
+
+## Information
+{rg['information']}
+
+## Output Example
+{oe['output_example']}"""
+
+        result = {
+            "system_prompt": system_prompt,
+            "reasoning": "시스템 프롬프트가 마크다운 형식으로 성공적으로 생성되었습니다.",
+        }
+
+        # FinalSystemPromptOutput 형식으로 직접 반환
+        yield f"__NODE6_PARTIAL__:__FINAL_PARSE__:{json.dumps(result)}"
+
+    ################################
+    # 상태 저장용 dict
+    ################################
     state = {
-        "user_intention": user_intention,
-        "prompt_type": user_sys_params,
-        "prompt_draft": None,
-        "prompt_refined": None,
-        "final_prompt": None,
+        "user_intention": user_intention,  # 유저 입력
+        "role_guidance": {
+            "role": "",
+            "instructions": "",
+            "information": "",
+        },  # 1번 노드 결과
+        "output_example": {"output_example": ""},  # 2번 노드 결과
+        "role_summary": {"summary": []},  # 3번 노드 결과
+        "conflict_evaluation": {
+            "has_conflicts": False,
+            "conflicts": [],
+            "resolution": "",
+        },  # 4번 노드 결과
+        "coverage_evaluation": {
+            "is_complete": False,
+            "missing_items": [],
+        },  # 5번 노드 결과
+        "final_prompt": {},  # 6번 노드 결과
     }
 
-    def analyze_intention(state):
-        """사용자 의도를 분석하고 초기 프롬프트 초안을 작성합니다."""
-        user_intention = state["user_intention"]
-        prompt_type = state["prompt_type"]
+    update_status("시스템 프롬프트 생성을 시작합니다.", "info")
 
-        type_guidance = ""
-        if prompt_type == "user":
-            type_guidance = "사용자 프롬프트를 생성해주세요. 사용자 프롬프트는 AI에게 직접 전달되는 질문이나 지시사항입니다."
-        else:  # system
-            type_guidance = "시스템 프롬프트를 생성해주세요. 시스템 프롬프트는 AI의 역할과 동작을 정의하는 지침입니다."
+    ################################
+    # 1) 1,2,3 번 노드를 병렬 수행 (round-robin 방식)
+    ################################
+    update_status("1,2,3번 노드 (병렬) 시작", "info")
 
-        system_message = f"""당신은 전문 프롬프트 엔지니어입니다.
-사용자의 의도와 요구사항을 분석하여 효과적인 AI 프롬프트를 설계해주세요.
-{type_guidance}
-사용자 의도를 이해하고 초기 프롬프트 초안을 작성하세요.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "초기 시스템 프롬프트 초안",
-  "user_prompt_template": "초기 사용자 프롬프트 템플릿",
-  "reasoning": "이 프롬프트가 사용자 의도에 어떻게 부합하는지에 대한 초기 분석"
-}}"""
+    # 생성기 생성
+    node1_gen = node_system_1_role_guidance(state.copy())
+    node2_gen = node_system_2_output_example(state.copy())
+    node3_gen = node_system_3_role_summary(state.copy())
 
-        prompt_input = (
-            f"다음 사용자 의도를 분석하고 초기 프롬프트 초안을 작성해주세요:\n\n"
-            f"사용자 의도: {user_intention}\n\n"
-            f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-            "JSON 형식으로 초기 시스템 프롬프트와 사용자 프롬프트 템플릿을 제안해주세요."
-        )
+    # 생성기와 관련 상태
+    generators = [
+        (node1_gen, "node1", False, ""),
+        (node2_gen, "node2", False, ""),
+        (node3_gen, "node3", False, ""),
+    ]
 
-        try:
-            response = llm_gpt4o.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
-            )
-
-            parsed_output = PromptOutput.model_validate_json(response.content)
-
-            state["prompt_draft"] = {
-                "system_prompt": parsed_output.system_prompt.strip(),
-                "user_prompt_template": parsed_output.user_prompt_template.strip(),
-                "reasoning": parsed_output.reasoning.strip(),
-            }
-
-        except Exception as e:
-            print(f"[ERROR] 의도 분석 중 오류 발생: {e}")
-            state["prompt_draft"] = {
-                "system_prompt": "오류로 인해 초기 프롬프트를 생성하지 못했습니다.",
-                "user_prompt_template": "오류로 인해 사용자 프롬프트 템플릿을 생성하지 못했습니다.",
-                "reasoning": f"오류 발생: {str(e)}",
-            }
-
-        return state
-
-    def refine_prompt(state):
-        """초기 프롬프트 초안을 개선합니다."""
-        draft = state["prompt_draft"]
-        user_intention = state["user_intention"]
-        prompt_type = state["prompt_type"]
-
-        type_specific_guidance = ""
-        if prompt_type == "user":
-            type_specific_guidance = "사용자 프롬프트 템플릿에 더 집중하여 개선하세요."
-        else:
-            type_specific_guidance = "시스템 프롬프트에 더 집중하여 개선하세요."
-
-        system_message = f"""당신은 최고 수준의 프롬프트 엔지니어입니다.
-초기 프롬프트 초안을 검토하고 더 효과적이고 정교한 프롬프트로 개선해주세요.
-{type_specific_guidance}
-명확성, 효과성, 사용자 의도 반영 측면에서 개선점을 찾아 적용하세요.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "개선된 시스템 프롬프트",
-  "user_prompt_template": "개선된 사용자 프롬프트 템플릿",
-  "reasoning": "개선 사항에 대한 상세 설명과 효과적인 이유"
-}}"""
-
-        prompt_input = (
-            f"다음 초기 프롬프트 초안을 검토하고 개선해주세요:\n\n"
-            f"사용자 의도: {user_intention}\n\n"
-            f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-            f"초기 시스템 프롬프트:\n\"{draft['system_prompt']}\"\n\n"
-            f"초기 사용자 프롬프트 템플릿:\n\"{draft['user_prompt_template']}\"\n\n"
-            "이 프롬프트를 더 효과적으로 개선하고 JSON 형식으로 응답해주세요."
-        )
-
-        try:
-            response = llm_gpt4o.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
-            )
-
-            parsed_output = PromptOutput.model_validate_json(response.content)
-
-            state["prompt_refined"] = {
-                "system_prompt": parsed_output.system_prompt.strip(),
-                "user_prompt_template": parsed_output.user_prompt_template.strip(),
-                "reasoning": parsed_output.reasoning.strip(),
-            }
-
-        except Exception as e:
-            print(f"[ERROR] 프롬프트 개선 중 오류 발생: {e}")
-            state["prompt_refined"] = state["prompt_draft"]
-
-        return state
-
-    def finalize_prompt(state):
-        """최종 프롬프트를 결정하고 평가합니다."""
-        refined = state["prompt_refined"]
-        user_intention = state["user_intention"]
-        prompt_type = state["prompt_type"]
-
-        type_specific_guidance = ""
-        if prompt_type == "user":
-            type_specific_guidance = "사용자 프롬프트 템플릿이 사용자 의도를 직접적으로 표현하는지 확인하세요."
-        else:
-            type_specific_guidance = (
-                "시스템 프롬프트가 AI의 역할과 행동을 명확하게 정의하는지 확인하세요."
-            )
-
-        system_message = f"""당신은 프롬프트 엔지니어링 전문가입니다.
-개선된 프롬프트를 최종 검토하고, 사용자 의도에 가장 적합한 최종 버전을 확정해주세요.
-{type_specific_guidance}
-최종 프롬프트는 구체적이고, 명확하며, 사용자 의도를 정확히 충족해야 합니다.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "최종 확정된 시스템 프롬프트",
-  "user_prompt_template": "최종 확정된 사용자 프롬프트 템플릿",
-  "reasoning": "최종 프롬프트가 사용자 의도를 어떻게 충족하는지와 예상되는 효과에 대한 최종 평가"
-}}"""
-
-        prompt_input = (
-            f"다음 개선된 프롬프트를 최종 검토하고 확정해주세요:\n\n"
-            f"사용자 의도: {user_intention}\n\n"
-            f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-            f"개선된 시스템 프롬프트:\n\"{refined['system_prompt']}\"\n\n"
-            f"개선된 사용자 프롬프트 템플릿:\n\"{refined['user_prompt_template']}\"\n\n"
-            "최종 확정된 프롬프트를 JSON 형식으로 제공하고 그 효과에 대한 최종 평가를 해주세요."
-        )
-
-        try:
-            response = llm_gpt4o.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
-            )
-
-            parsed_output = PromptOutput.model_validate_json(response.content)
-
-            state["final_prompt"] = {
-                "system_prompt": parsed_output.system_prompt.strip(),
-                "user_prompt_template": parsed_output.user_prompt_template.strip(),
-                "reasoning": parsed_output.reasoning.strip(),
-            }
-
-        except Exception as e:
-            print(f"[ERROR] 프롬프트 확정 중 오류 발생: {e}")
-            state["final_prompt"] = state["prompt_refined"]
-
-        return state
-
-    def generate_report(state):
-        """프롬프트 생성 과정과 최종 결과에 대한 보고서를 생성합니다."""
-        final = state["final_prompt"]
-        prompt_type = state["prompt_type"]
-
-        print("--프롬프트 생성 최종 결과--\n")
-
-        if prompt_type == "user":
-            print(
-                f"사용자 프롬프트 템플릿 (주요 결과물):\n{final['user_prompt_template']}\n"
-            )
-            print(f"추천 시스템 프롬프트:\n{final['system_prompt']}\n")
-        else:
-            print(f"시스템 프롬프트 (주요 결과물):\n{final['system_prompt']}\n")
-            print(f"추천 사용자 프롬프트 템플릿:\n{final['user_prompt_template']}\n")
-
-        print(f"프롬프트 설계 근거:\n{final['reasoning']}\n")
-
-        return state
-
-    ##########
-
-    graph = StateGraph(dict)
-
-    graph.add_node("Analyze Intention", analyze_intention)
-    graph.add_node("Refine Prompt", refine_prompt)
-    graph.add_node("Finalize Prompt", finalize_prompt)
-    graph.add_node("Generate Report", generate_report)
-
-    graph.set_entry_point("Analyze Intention")
-    graph.add_edge("Analyze Intention", "Refine Prompt")
-    graph.add_edge("Refine Prompt", "Finalize Prompt")
-    graph.add_edge("Finalize Prompt", "Generate Report")
-
-    graph_executor = graph.compile()
-
-    result = graph_executor.invoke(state)
-    return result
-
-
-def generate_prompt_by_intention(user_intention, prompt_type):
-    """
-    사용자 의도를 기반으로 프롬프트를 생성합니다.
-
-    Args:
-        user_intention (str): 사용자가 원하는 프롬프트의 의도/목적
-        prompt_type (str): 'user' 또는 'system' 프롬프트 유형
-
-    Returns:
-        dict: 생성된 프롬프트 정보를 담은 딕셔너리
-    """
-    result = run_prompt_generation_agent(user_intention, prompt_type)
-
-    if result and result.get("final_prompt"):
-        final_prompt = result["final_prompt"]
-
-        if prompt_type == "user":
-            return {
-                "prompt": final_prompt["user_prompt_template"],
-                "reasoning": final_prompt["reasoning"],
-            }
-        else:  # system
-            return {
-                "prompt": final_prompt["system_prompt"],
-                "reasoning": final_prompt["reasoning"],
-            }
-
-    return {
-        "prompt": f"생성 실패: {prompt_type} 프롬프트 ({user_intention})",
-        "reasoning": "프롬프트 생성 중 오류가 발생했습니다.",
-    }
-
-
-class StreamingQueueCallbackHandler(BaseCallbackHandler):
-    """콜백 핸들러로 스트리밍 응답을 큐에 넣습니다."""
-
-    def __init__(self, q):
-        self.queue = q
-        self.streaming_chunks = []
-
-    def on_llm_new_token(self, token, **kwargs):
-        """새 토큰을 받을 때마다 큐에 넣습니다."""
-        self.queue.put(token)
-        self.streaming_chunks.append(token)
-
-    def on_llm_end(self, *args, **kwargs):
-        """생성 완료시 END 신호를 큐에 넣습니다."""
-        self.queue.put("__END__")
-
-
-def run_prompt_generation_agent_streaming(user_intention, prompt_type=None):
-    """
-    사용자 의도를 기반으로 프롬프트를 생성하면서 그 과정을 실시간으로 스트리밍합니다.
-
-    Args:
-        user_intention (str): 사용자의 목적과 원하는 AI 응답 유형에 대한 설명
-        prompt_type (str): 'user' 또는 'system' 프롬프트 유형
-
-    Yields:
-        str: 생성 과정의 각 토큰을 개별적으로 출력
-    """
-    if prompt_type is None or prompt_type not in ["user", "system"]:
-        prompt_type = "system"
-
-    final_output = {"prompt_type": prompt_type, "prompt": "", "reasoning": ""}
-
-    for char in f"'{prompt_type}' 프롬프트 생성을 위한 의도 분석 중...\n\n":
-        yield char
-
-    type_guidance = ""
-    if prompt_type == "user":
-        type_guidance = "사용자 프롬프트를 생성해주세요. 사용자 프롬프트는 AI에게 직접 전달되는 질문이나 지시사항입니다."
-    else:
-        type_guidance = "시스템 프롬프트를 생성해주세요. 시스템 프롬프트는 AI의 역할과 동작을 정의하는 지침입니다."
-
-    system_message = f"""당신은 전문 프롬프트 엔지니어입니다.
-사용자의 의도와 요구사항을 분석하여 효과적인 AI 프롬프트를 설계해주세요.
-{type_guidance}
-사용자 의도를 이해하고 초기 프롬프트 초안을 작성하세요.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "초기 시스템 프롬프트 초안",
-  "user_prompt_template": "초기 사용자 프롬프트 템플릿",
-  "reasoning": "이 프롬프트가 사용자 의도에 어떻게 부합하는지에 대한 초기 분석"
-}}"""
-
-    prompt_input = (
-        f"다음 사용자 의도를 분석하고 초기 프롬프트 초안을 작성해주세요:\n\n"
-        f"사용자 의도: {user_intention}\n\n"
-        f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-        "JSON 형식으로 초기 시스템 프롬프트와 사용자 프롬프트 템플릿을 제안해주세요."
-    )
+    parsed_results = {"node1": None, "node2": None, "node3": None}
 
     try:
-        message_queue = queue_module.Queue()
-        streaming_handler = StreamingQueueCallbackHandler(message_queue)
+        # 모든 생성기가 완료될 때까지 라운드 로빈 방식으로 실행
+        while not all(done for _, _, done, _ in generators):
+            for i, (gen, name, done, buffer) in enumerate(generators):
+                if done:
+                    continue
 
-        def run_llm():
-            llm_gpt4o_streaming = AzureChatOpenAI(
-                openai_api_key=AOAI_API_KEY,
-                azure_endpoint=AOAI_ENDPOINT,
-                api_version=AOAI_API_VERSION,
-                deployment_name=AOAI_DEPLOY_GPT4O,
-                temperature=0.7,
-                max_tokens=1000,
-                streaming=True,
-                callbacks=[streaming_handler],
-                model_kwargs={"response_format": {"type": "json_object"}},
-            )
+                try:
+                    # 현재 생성기에서 다음 부분 가져오기
+                    part = await asyncio.wait_for(gen.asend(None), timeout=0.1)
+                    yield part
 
-            llm_gpt4o_streaming.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
-            )
+                    # 버퍼 업데이트
+                    new_buffer = buffer + part
+                    time.sleep(0.03)
+                    generators[i] = (gen, name, done, new_buffer)
 
-        thread = threading.Thread(target=run_llm)
-        thread.start()
+                    # FINAL_PARSE 확인
+                    if "__FINAL_PARSE__" in new_buffer:
+                        final_parse_index = new_buffer.find("__FINAL_PARSE__")
+                        json_str = new_buffer[final_parse_index:].replace(
+                            "__FINAL_PARSE__:", ""
+                        )
+                        parsed_results[name] = json.loads(json_str)
+                        generators[i] = (gen, name, True, new_buffer)
 
-        response_text = ""
+                    elif "__FINAL_PARSE_ERROR__" in new_buffer:
+                        generators[i] = (gen, name, True, new_buffer)
 
-        while True:
-            token = message_queue.get()
-            if token == "__END__":
-                break
+                except asyncio.TimeoutError:
+                    # 타임아웃 발생 시 다음 생성기로 넘어감
+                    continue
+                except StopAsyncIteration:
+                    # 생성기 완료
+                    generators[i] = (gen, name, True, buffer)
+                except Exception as e:
+                    # 오류 처리
+                    yield f"__{name.upper()}_ERROR__: {str(e)}"
+                    generators[i] = (gen, name, True, buffer)
 
-            response_text += token
-            yield token
+    finally:
+        # 모든 생성기를 안전하게 닫음
+        for gen, name, _, _ in generators:
+            try:
+                await gen.aclose()
+            except Exception:
+                pass
 
-        parsed_output = PromptOutput.model_validate_json(response_text)
-        prompt_draft = {
-            "system_prompt": parsed_output.system_prompt.strip(),
-            "user_prompt_template": parsed_output.user_prompt_template.strip(),
-            "reasoning": parsed_output.reasoning.strip(),
-        }
-
-        for char in "\n\n<|eot_id|>초안<|eot_id|>\n\n":
-            yield char
-
-        if prompt_type == "user":
-            message = f"사용자 프롬프트 초안:\n```\n{prompt_draft['user_prompt_template']}\n```\n\n"
-        else:
-            message = (
-                f"시스템 프롬프트 초안:\n```\n{prompt_draft['system_prompt']}\n```\n\n"
-            )
-
-        for char in message:
-            yield char
-
-        type_specific_guidance = ""
-        if prompt_type == "user":
-            type_specific_guidance = "사용자 프롬프트 템플릿에 더 집중하여 개선하세요."
-        else:
-            type_specific_guidance = "시스템 프롬프트에 더 집중하여 개선하세요."
-
-        system_message = f"""당신은 최고 수준의 프롬프트 엔지니어입니다.
-초기 프롬프트 초안을 검토하고 더 효과적이고 정교한 프롬프트로 개선해주세요.
-{type_specific_guidance}
-명확성, 효과성, 사용자 의도 반영 측면에서 개선점을 찾아 적용하세요.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "개선된 시스템 프롬프트",
-  "user_prompt_template": "개선된 사용자 프롬프트 템플릿",
-  "reasoning": "개선 사항에 대한 상세 설명과 효과적인 이유"
-}}"""
-
-        prompt_input = (
-            f"다음 초기 프롬프트 초안을 검토하고 개선해주세요:\n\n"
-            f"사용자 의도: {user_intention}\n\n"
-            f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-            f"초기 시스템 프롬프트:\n\"{prompt_draft['system_prompt']}\"\n\n"
-            f"초기 사용자 프롬프트 템플릿:\n\"{prompt_draft['user_prompt_template']}\"\n\n"
-            "이 프롬프트를 더 효과적으로 개선하고 JSON 형식으로 응답해주세요."
+    # 결과 state 반영
+    if parsed_results["node1"]:
+        state["role_guidance"]["role"] = parsed_results["node1"].get("role", "")
+        state["role_guidance"]["instructions"] = parsed_results["node1"].get(
+            "instructions", ""
+        )
+        state["role_guidance"]["information"] = parsed_results["node1"].get(
+            "information", ""
         )
 
-        message_queue = queue_module.Queue()
-        streaming_handler = StreamingQueueCallbackHandler(message_queue)
-
-        def run_llm():
-            llm_gpt4o_streaming = AzureChatOpenAI(
-                openai_api_key=AOAI_API_KEY,
-                azure_endpoint=AOAI_ENDPOINT,
-                api_version=AOAI_API_VERSION,
-                deployment_name=AOAI_DEPLOY_GPT4O,
-                temperature=0.7,
-                max_tokens=1000,
-                streaming=True,
-                callbacks=[streaming_handler],
-                model_kwargs={"response_format": {"type": "json_object"}},
-            )
-
-            llm_gpt4o_streaming.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
-            )
-
-        thread = threading.Thread(target=run_llm)
-        thread.start()
-
-        response_text = ""
-
-        while True:
-            token = message_queue.get()
-            if token == "__END__":
-                break
-
-            response_text += token
-            yield token
-
-        parsed_output = PromptOutput.model_validate_json(response_text)
-        prompt_refined = {
-            "system_prompt": parsed_output.system_prompt.strip(),
-            "user_prompt_template": parsed_output.user_prompt_template.strip(),
-            "reasoning": parsed_output.reasoning.strip(),
-        }
-
-        for char in "\n\n<|eot_id|>개선<|eot_id|>\n\n":
-            yield char
-
-        type_specific_guidance = ""
-        if prompt_type == "user":
-            type_specific_guidance = "사용자 프롬프트 템플릿이 사용자 의도를 직접적으로 표현하는지 확인하세요."
-        else:
-            type_specific_guidance = (
-                "시스템 프롬프트가 AI의 역할과 행동을 명확하게 정의하는지 확인하세요."
-            )
-
-        system_message = f"""당신은 프롬프트 엔지니어링 전문가입니다.
-개선된 프롬프트를 최종 검토하고, 사용자 의도에 가장 적합한 최종 버전을 확정해주세요.
-{type_specific_guidance}
-최종 프롬프트는 구체적이고, 명확하며, 사용자 의도를 정확히 충족해야 합니다.
-다음 JSON 형식으로 응답해주세요:
-{{
-  "system_prompt": "최종 확정된 시스템 프롬프트",
-  "user_prompt_template": "최종 확정된 사용자 프롬프트 템플릿",
-  "reasoning": "최종 프롬프트가 사용자 의도를 어떻게 충족하는지와 예상되는 효과에 대한 최종 평가"
-}}"""
-
-        prompt_input = (
-            f"다음 개선된 프롬프트를 최종 검토하고 확정해주세요:\n\n"
-            f"사용자 의도: {user_intention}\n\n"
-            f"프롬프트 타입: {prompt_type} 프롬프트\n\n"
-            f"개선된 시스템 프롬프트:\n\"{prompt_refined['system_prompt']}\"\n\n"
-            f"개선된 사용자 프롬프트 템플릿:\n\"{prompt_refined['user_prompt_template']}\"\n\n"
-            "최종 확정된 프롬프트를 JSON 형식으로 제공하고 그 효과에 대한 최종 평가를 해주세요."
+    if parsed_results["node2"]:
+        state["output_example"]["output_example"] = parsed_results["node2"].get(
+            "output_example", ""
         )
 
-        message_queue = queue_module.Queue()
-        streaming_handler = StreamingQueueCallbackHandler(message_queue)
+    if parsed_results["node3"]:
+        state["role_summary"]["summary"] = parsed_results["node3"].get("summary", [])
 
-        def run_llm():
-            llm_gpt4o_streaming = AzureChatOpenAI(
-                openai_api_key=AOAI_API_KEY,
-                azure_endpoint=AOAI_ENDPOINT,
-                api_version=AOAI_API_VERSION,
-                deployment_name=AOAI_DEPLOY_GPT4O,
-                temperature=0.7,
-                max_tokens=1000,
-                streaming=True,
-                callbacks=[streaming_handler],
-                model_kwargs={"response_format": {"type": "json_object"}},
+    update_status("1,2,3번 노드 (병렬) 완료", "info")
+
+    ################################
+    # 2) 노드4 (충돌 평가)
+    ################################
+    update_status("4번 노드 (충돌 평가) 시작", "info")
+    node4_gen = node_system_4_conflict_evaluation(state)
+    node4_parsed_json = None
+
+    async for part in node4_gen:
+        time.sleep(0.03)
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node4_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("4번 노드 완료", "info")
+
+    if node4_parsed_json:
+        state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
+            "has_conflicts", False
+        )
+        state["conflict_evaluation"]["conflicts"] = node4_parsed_json.get(
+            "conflicts", []
+        )
+        state["conflict_evaluation"]["resolution"] = node4_parsed_json.get(
+            "resolution", ""
+        )
+
+    # 충돌 해결 루프: has_conflicts가 False가 될 때까지 반복
+    conflict_iteration = 0
+    max_conflict_iterations = 3  # 무한 루프 방지를 위한 최대 반복 횟수
+
+    while (
+        state["conflict_evaluation"]["has_conflicts"]
+        and conflict_iteration < max_conflict_iterations
+    ):
+        conflict_iteration += 1
+        update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 시작", "info")
+
+        # 충돌이 있으면 4.1 해결 노드 실행
+        node4_1_gen = node_system_4_1_conflict_resolution(state)
+        node4_1_parsed_json = None
+
+        async for part in node4_1_gen:
+            time.sleep(0.03)
+            yield part
+            if part.startswith("__FINAL_PARSE__"):
+                raw_json = part.replace("__FINAL_PARSE__:", "")
+                node4_1_parsed_json = json.loads(raw_json)
+            elif part.startswith("__PARSED_OBJECT__"):
+                pass
+
+        update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 완료", "info")
+
+        # 해결된 정보로 상태 업데이트
+        if node4_1_parsed_json:
+            state["role_guidance"]["role"] = node4_1_parsed_json.get("role", "")
+            state["role_guidance"]["instructions"] = node4_1_parsed_json.get(
+                "instructions", ""
+            )
+            state["role_guidance"]["information"] = node4_1_parsed_json.get(
+                "information", ""
+            )
+            state["output_example"]["output_example"] = node4_1_parsed_json.get(
+                "output_example", ""
             )
 
-            llm_gpt4o_streaming.invoke(
-                [
-                    SystemMessage(content=system_message),
-                    HumanMessage(content=prompt_input),
-                ]
+        # 충돌 재평가를 위해 노드4 다시 실행
+        update_status(f"4번 노드 (재평가) #{conflict_iteration} 시작", "info")
+        node4_gen = node_system_4_conflict_evaluation(state)
+        node4_parsed_json = None
+
+        async for part in node4_gen:
+            time.sleep(0.03)
+            yield part
+            if part.startswith("__FINAL_PARSE__"):
+                raw_json = part.replace("__FINAL_PARSE__:", "")
+                node4_parsed_json = json.loads(raw_json)
+            elif part.startswith("__PARSED_OBJECT__"):
+                pass
+
+        update_status(f"4번 노드 (재평가) #{conflict_iteration} 완료", "info")
+
+        # 재평가 결과 상태 업데이트
+        if node4_parsed_json:
+            state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
+                "has_conflicts", False
+            )
+            state["conflict_evaluation"]["conflicts"] = node4_parsed_json.get(
+                "conflicts", []
+            )
+            state["conflict_evaluation"]["resolution"] = node4_parsed_json.get(
+                "resolution", ""
             )
 
-        thread = threading.Thread(target=run_llm)
-        thread.start()
+    if (
+        conflict_iteration == max_conflict_iterations
+        and state["conflict_evaluation"]["has_conflicts"]
+    ):
+        update_status(
+            "최대 충돌 해결 반복 횟수에 도달했습니다. 남은 충돌이 있을 수 있습니다.",
+            "warning",
+        )
 
-        response_text = ""
+    ################################
+    # 3) 노드5 (커버리지 평가)
+    ################################
+    update_status("5번 노드 (커버리지 평가) 시작", "info")
 
-        while True:
-            token = message_queue.get()
-            if token == "__END__":
-                break
+    # 커버리지 평가 및 보완 루프
+    coverage_iteration = 0
+    max_coverage_iterations = 3  # 무한 루프 방지를 위한 최대 반복 횟수
+    is_complete = False
 
-            response_text += token
+    while not is_complete and coverage_iteration < max_coverage_iterations:
+        coverage_iteration += 1
+        update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 시작", "info")
+
+        # 5번 노드 (커버리지 평가) 실행
+        node5_gen = node_system_5_coverage_evaluation(state)
+        node5_parsed_json = None
+        node5_buffer = ""
+
+        # 모든 응답을 수신
+        async for part in node5_gen:
+            time.sleep(0.03)
+            yield part
+
+            # __NODE5_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
+            if part.startswith("__NODE5_PARTIAL__:"):
+                content = part[len("__NODE5_PARTIAL__:") :]
+                node5_buffer += content
+
+        # 전체 수신 후 한 번만 파싱 시도
+        try:
+            # __FINAL_PARSE__: 태그 찾기
+            if "__FINAL_PARSE__:" in node5_buffer:
+                # __FINAL_PARSE__: 이후의 문자열 추출
+                json_str = node5_buffer.split("__FINAL_PARSE__:", 1)[1].strip()
+
+                # __PARSED_OBJECT__: 태그가 있으면 그 앞부분까지만 추출
+                if "__PARSED_OBJECT__:" in json_str:
+                    json_str = json_str.split("__PARSED_OBJECT__:", 1)[0].strip()
+
+                # JSON 파싱
+                node5_parsed_json = json.loads(json_str)
+                update_status(f"5번 노드 결과 파싱 성공", "info")
+            else:
+                update_status(
+                    f"5번 노드에서 __FINAL_PARSE__ 태그를 찾을 수 없습니다", "warning"
+                )
+        except Exception as e:
+            update_status(f"5번 노드 JSON 파싱 오류: {str(e)}", "error")
+            update_status(f"문제된 JSON 문자열: {node5_buffer[:200]}...", "debug")
+
+        update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 완료", "info")
+
+        # 평가 결과 상태 업데이트
+        if node5_parsed_json:
+            print(f"node5_parsed_json: {node5_parsed_json}")
+            state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
+                "is_complete", False
+            )
+            print(f'state updated: {state["coverage_evaluation"]["is_complete"]}')
+            state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
+                "missing_items", []
+            )
+            print(f'state updated: {state["coverage_evaluation"]["missing_items"]}')
+            is_complete = state["coverage_evaluation"]["is_complete"]
+
+        # 커버리지가 완전하면 루프 종료
+        if is_complete:
+            update_status("커버리지 평가 완료: 모든 항목이 충족됨", "info")
+            break
+
+        # 누락된 항목이 있으면 5.1 노드(커버리지 보완) 실행
+        update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 시작", "info")
+        node5_1_gen = node_system_5_1_coverage_fix(state)
+        node5_1_parsed_json = None
+        node5_1_buffer = ""
+
+        # 모든 응답을 수신
+        async for part in node5_1_gen:
+            time.sleep(0.03)
+            yield part
+
+            # __NODE5_1_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
+            if part.startswith("__NODE5_1_PARTIAL__:"):
+                content = part[len("__NODE5_1_PARTIAL__:") :]
+                node5_1_buffer += content
+
+        # 전체 수신 후 한 번만 파싱 시도
+        try:
+            # __FINAL_PARSE__: 태그 찾기
+            if "__FINAL_PARSE__:" in node5_1_buffer:
+                # __FINAL_PARSE__: 이후의 문자열 추출
+                json_str = node5_1_buffer.split("__FINAL_PARSE__:", 1)[1].strip()
+
+                # __PARSED_OBJECT__: 태그가 있으면 그 앞부분까지만 추출
+                if "__PARSED_OBJECT__:" in json_str:
+                    json_str = json_str.split("__PARSED_OBJECT__:", 1)[0].strip()
+
+                # JSON 파싱
+                node5_1_parsed_json = json.loads(json_str)
+                update_status(f"5.1번 노드 결과 파싱 성공", "info")
+            else:
+                update_status(
+                    f"5.1번 노드에서 __FINAL_PARSE__ 태그를 찾을 수 없습니다", "warning"
+                )
+        except Exception as e:
+            update_status(f"5.1번 노드 JSON 파싱 오류: {str(e)}", "error")
+            update_status(f"문제된 JSON 문자열: {node5_1_buffer[:200]}...", "debug")
+
+        update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 완료", "info")
+
+        # 보완된 결과를 상태에 반영
+        if node5_1_parsed_json:
+            state["role_guidance"]["role"] = node5_1_parsed_json.get("role", "")
+            state["role_guidance"]["instructions"] = node5_1_parsed_json.get(
+                "instructions", ""
+            )
+            state["role_guidance"]["information"] = node5_1_parsed_json.get(
+                "information", ""
+            )
+            state["output_example"]["output_example"] = node5_1_parsed_json.get(
+                "output_example", ""
+            )
+
+    # 최대 반복 횟수 도달 시 경고
+    if coverage_iteration == max_coverage_iterations and not is_complete:
+        update_status(
+            "최대 커버리지 평가 반복 횟수에 도달했습니다. 여전히 누락된 항목이 있을 수 있습니다.",
+            "warning",
+        )
+
+    ################################
+    # 4) 노드6 (최종)
+    ################################
+    update_status("6번 노드 (최종) 시작", "info")
+    node6_gen = node_system_6_final(state)
+    node6_parsed_json = None
+
+    async for part in node6_gen:
+        time.sleep(0.03)
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node6_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("6번 노드 완료", "info")
+
+    if node6_parsed_json:
+        state["final_prompt"] = node6_parsed_json
+
+
+def run_prompt_generation_agent_streaming(
+    user_intention: str, status_callback: Optional[callable] = None
+) -> Generator[str, None, None]:
+    """
+    동기 -> async generator consume
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    async_gen = run_prompt_generation_agent_async(user_intention, status_callback)
+
+    async def consume():
+        async for token in async_gen:
             yield token
 
-        parsed_output = PromptOutput.model_validate_json(response_text)
-        final_prompt = {
-            "system_prompt": parsed_output.system_prompt.strip(),
-            "user_prompt_template": parsed_output.user_prompt_template.strip(),
-            "reasoning": parsed_output.reasoning.strip(),
-        }
+    gen = consume()
 
-        if prompt_type == "user":
-            final_output["prompt"] = final_prompt["user_prompt_template"]
-        else:
-            final_output["prompt"] = final_prompt["system_prompt"]
-        final_output["reasoning"] = final_prompt["reasoning"]
-
-        for char in "\n\n<|eot_id|>최종<|eot_id|>\n\n":
-            yield char
-
-        if prompt_type == "user":
-            result_msg = f"## 최종 사용자 프롬프트\n\n```\n{final_prompt['user_prompt_template']}\n```\n\n"
-            result_msg += f"### 추천 시스템 프롬프트\n\n```\n{final_prompt['system_prompt']}\n```\n\n"
-        else:
-            result_msg = f"## 최종 시스템 프롬프트\n\n```\n{final_prompt['system_prompt']}\n```\n\n"
-            result_msg += f"### 추천 사용자 프롬프트 템플릿\n\n```\n{final_prompt['user_prompt_template']}\n```\n\n"
-
-        result_msg += f"### 설계 근거\n\n{final_prompt['reasoning']}\n\n"
-
-        for char in result_msg:
-            yield char
-
-        yield f"__RESULT_DATA__:{json.dumps(final_output)}"
-
-    except Exception as e:
-        print(f"[ERROR] 프롬프트 생성 중 오류 발생: {e}")
-        error_msg = f"오류 발생: {str(e)}"
-        for char in error_msg:
-            yield char
-
-        error_data = {
-            "prompt_type": prompt_type,
-            "prompt": f"생성 실패: {prompt_type} 프롬프트",
-            "reasoning": f"프롬프트 생성 중 오류가 발생했습니다: {str(e)}",
-        }
-        yield f"__RESULT_DATA__:{json.dumps(error_data)}"
+    try:
+        while True:
+            token = loop.run_until_complete(anext(gen))
+            yield token
+    except StopAsyncIteration:
+        pass
+    finally:
+        loop.close()
 
 
-def generate_prompt_by_intention_streaming(user_intention, prompt_type):
+def generate_system_prompt_by_intention_streaming(
+    user_intention: str, status_callback: Optional[callable] = None
+) -> Generator[str, None, None]:
     """
-    스트리밍 방식으로 사용자 의도를 기반으로 프롬프트를 생성합니다.
-
-    Args:
-        user_intention (str): 사용자가 원하는 프롬프트의 의도/목적
-        prompt_type (str): 'user' 또는 'system' 프롬프트 유형
-
-    Yields:
-        str: 생성 과정의 각 토큰을 개별적으로 출력
+    외부에서 직접 호출할 수 있는 진입점.
+    예시:
+        for token in generate_system_prompt_by_intention_streaming("..."):
+            # token 별로 스트리밍
+            ...
     """
-    for token in run_prompt_generation_agent_streaming(user_intention, prompt_type):
+    for token in run_prompt_generation_agent_streaming(user_intention, status_callback):
         yield token

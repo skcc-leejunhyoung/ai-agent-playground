@@ -3,6 +3,9 @@
 import streamlit as st
 import time
 import io
+import os
+import json
+from agent.rag_module import process_for_rag
 from database import (
     init_db,
     get_projects,
@@ -342,3 +345,89 @@ if st.session_state.get("task_state") == "delete_project":
     st.session_state.task_state = None
     time.sleep(0.5)
     st.rerun()
+
+
+##########
+
+st.container(height=100, border=False)
+col1, col2 = st.columns([5, 1])
+with col2:
+    with st.popover("RAG"):
+        tab1, tab2, tab3 = st.tabs(["Embedding", "Stats: All", "Stats: File"])
+        with tab1:
+            uploaded_file = st.file_uploader(
+                "텍스트 또는 HTML 파일 업로드", type=["txt", "html", "htm"]
+            )
+
+            if st.button("Vector Embedding 시작", use_container_width=True):
+                if uploaded_file:
+                    try:
+                        from stqdm import stqdm
+
+                        with st.spinner("RAG 학습 중..."):
+                            progress_text = st.empty()
+                            progress_text.text("파일 처리 중...")
+
+                            file_extension = uploaded_file.name.split(".")[-1].lower()
+
+                            temp_path = f"temp_{uploaded_file.name}"
+                            with open(temp_path, "wb") as f:
+                                f.write(uploaded_file.getvalue())
+
+                            documents = process_for_rag(
+                                temp_path, content_type=file_extension
+                            )
+
+                            os.remove(temp_path)
+
+                            if documents:
+                                st.success(
+                                    f"RAG 학습 완료! {len(documents)}개의 청크가 처리되었습니다."
+                                )
+                            else:
+                                st.error("문서 처리 중 오류가 발생했습니다.")
+                    except Exception as e:
+                        st.error(f"오류 발생: {str(e)}")
+                else:
+                    st.warning("파일을 업로드해주세요.")
+        with tab2:
+            try:
+                stats_file = os.path.join("vector_db", "rag_stats.json")
+                if os.path.exists(stats_file):
+                    with open(stats_file, "r", encoding="utf-8") as f:
+                        stats_data = json.load(f)
+
+                    st.subheader(":blue[전체 통계]")
+                    total_stats = stats_data["total_stats"]
+                    for key, value in total_stats.items():
+                        st.metric(label=key, value=value)
+
+                else:
+                    st.info("아직 처리된 RAG 데이터가 없습니다.")
+            except Exception as e:
+                st.error(f"통계 로딩 중 오류 발생: {str(e)}")
+        with tab3:
+            try:
+                stats_file = os.path.join("vector_db", "rag_stats.json")
+                if os.path.exists(stats_file):
+                    with open(stats_file, "r", encoding="utf-8") as f:
+                        stats_data = json.load(f)
+
+                    st.subheader(":blue[파일별 통계]")
+                    for file_name, file_stats in stats_data["file_stats"].items():
+                        with st.expander(file_name):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("청크 수", file_stats["총 청크 수"])
+                                st.metric("키워드 수", file_stats["저장된 키워드 수"])
+                            with col2:
+                                st.metric(
+                                    "평균 청크 길이",
+                                    f"{int(file_stats['평균 청크 길이'])}자",
+                                )
+                                time = file_stats["처리 시간"]
+                                st.markdown(f":gray[{time}]")
+                else:
+                    st.info("아직 처리된 RAG 데이터가 없습니다.")
+            except Exception as e:
+                st.error(f"통계 로딩 중 오류 발생: {str(e)}")
