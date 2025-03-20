@@ -1,4 +1,5 @@
 streamlit
+streamlit-server-state  
 st-diff-viewer
 streamlit_monaco
 markdown
@@ -7,3 +8,8 @@ dotenv
 langgraph
 langchain
 langchain_openai
+bs4
+nltk
+konlpy
+qdrant-client
+stqdm
