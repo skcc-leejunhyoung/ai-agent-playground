@@ -20,6 +20,8 @@ from qdrant_client.http.models import (
     MatchValue,
 )
 from stqdm import stqdm
+import json
+from datetime import datetime
 
 # 환경 변수 로드
 load_dotenv()
@@ -165,36 +167,62 @@ def process_document(
         return [], np.array([])
 
 
+class QdrantClientManager:
+    _instance = None
+    _client = None
+
+    @classmethod
+    def get_client(cls, db_path: str = "vector_db"):
+        if cls._client is None:
+            cls._client = QdrantClient(path=db_path)
+        return cls._client
+
+    @classmethod
+    def close_client(cls):
+        if cls._client is not None:
+            cls._client.close()
+            cls._client = None
+
+
 def save_vector_db(
     documents: List[Document], embeddings: np.ndarray, db_path: str = "vector_db"
 ):
     """Qdrant를 사용한 벡터 DB 저장"""
-    # Qdrant 클라이언트 초기화
-    client = QdrantClient(path=db_path)
-    collection_name = "documents"
+    try:
+        # 기존 클라이언트가 있다면 닫기
+        QdrantClientManager.close_client()
 
-    # 컬렉션 생성
-    client.recreate_collection(
-        collection_name=collection_name,
-        vectors_config=VectorParams(size=len(embeddings[0]), distance=Distance.COSINE),
-    )
+        # 새로운 클라이언트 가져오기
+        client = QdrantClientManager.get_client(db_path)
+        collection_name = "documents"
 
-    # 문서와 임베딩 저장
-    client.upload_points(
-        collection_name=collection_name,
-        points=[
-            models.PointStruct(
-                id=idx,
-                vector=embedding.tolist(),
-                payload={
-                    "text": doc.page_content,
-                    "metadata": doc.metadata,
-                    "keywords": doc.metadata["keywords"],
-                },
-            )
-            for idx, (doc, embedding) in enumerate(zip(documents, embeddings))
-        ],
-    )
+        # 컬렉션 생성
+        client.recreate_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(
+                size=len(embeddings[0]), distance=Distance.COSINE
+            ),
+        )
+
+        # 문서와 임베딩 저장
+        client.upload_points(
+            collection_name=collection_name,
+            points=[
+                models.PointStruct(
+                    id=idx,
+                    vector=embedding.tolist(),
+                    payload={
+                        "text": doc.page_content,
+                        "metadata": doc.metadata,
+                        "keywords": doc.metadata["keywords"],
+                    },
+                )
+                for idx, (doc, embedding) in enumerate(zip(documents, embeddings))
+            ],
+        )
+    finally:
+        # 작업 완료 후 클라이언트 닫기
+        QdrantClientManager.close_client()
 
 
 def process_for_rag(
@@ -202,6 +230,18 @@ def process_for_rag(
 ) -> List[Document]:
     """RAG를 위한 모든 준비를 수행하는 메인 함수"""
     try:
+        # 파일명 추출
+        file_name = os.path.basename(source)
+        stats_file = os.path.join(db_path, "rag_stats.json")
+
+        # 이미 처리된 파일인지 확인
+        if os.path.exists(stats_file):
+            with open(stats_file, "r", encoding="utf-8") as f:
+                existing_stats = json.load(f)
+                if file_name in existing_stats["processed_files"]:
+                    print(f"경고: {file_name}은 이미 처리되었습니다.")
+                    return []
+
         # 1. NLTK 리소스 다운로드
         print("NLTK 리소스 다운로드 중...")
         download_nltk_resources()
@@ -226,25 +266,56 @@ def process_for_rag(
 
         # 5. 검색 테스트 수행
         print("검색 기능 테스트 중...")
-        test_query = documents[0].page_content[
-            :50
-        ]  # 첫 번째 문서의 일부를 테스트 쿼리로 사용
+        test_query = documents[0].page_content[:50]
         test_results = search_similar_chunks(test_query, top_k=1, db_path=db_path)
         if not test_results:
             print("경고: 검색 테스트 실패")
         else:
             print("검색 기능 테스트 완료")
 
-        # 6. 처리 결과 요약
-        summary = {
+        # 6. 처리 결과 요약 및 통계 저장
+        current_stats = {
+            "파일명": file_name,
             "총 청크 수": len(documents),
             "평균 청크 길이": sum(len(doc.page_content) for doc in documents)
             / len(documents),
             "저장된 키워드 수": sum(len(doc.metadata["keywords"]) for doc in documents),
             "벡터 DB 경로": db_path,
+            "청크 크기": 500,  # RecursiveCharacterTextSplitter의 chunk_size
+            "청크 중복도": 50,  # RecursiveCharacterTextSplitter의 chunk_overlap
+            "처리 시간": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+
+        # 기존 통계와 병합
+        if os.path.exists(stats_file):
+            with open(stats_file, "r", encoding="utf-8") as f:
+                stats_data = json.load(f)
+        else:
+            stats_data = {
+                "processed_files": [],
+                "total_stats": {
+                    "총 처리 파일 수": 0,
+                    "총 청크 수": 0,
+                    "총 키워드 수": 0,
+                },
+                "file_stats": {},
+            }
+
+        # 통계 업데이트
+        stats_data["processed_files"].append(file_name)
+        stats_data["file_stats"][file_name] = current_stats
+        stats_data["total_stats"]["총 처리 파일 수"] += 1
+        stats_data["total_stats"]["총 청크 수"] += len(documents)
+        stats_data["total_stats"]["총 키워드 수"] += sum(
+            len(doc.metadata["keywords"]) for doc in documents
+        )
+
+        # 통계 저장
+        with open(stats_file, "w", encoding="utf-8") as f:
+            json.dump(stats_data, f, ensure_ascii=False, indent=2)
+
         print("\nRAG 처리 결과 요약:")
-        for key, value in summary.items():
+        for key, value in current_stats.items():
             print(f"{key}: {value}")
 
         return documents
@@ -312,7 +383,7 @@ def select_candidates_by_keywords(
     query: str, db_path: str = "vector_db", top_k: int = 25
 ) -> List[Document]:
     """키워드 기반 후보 문서 선택"""
-    client = QdrantClient(path=db_path)
+    client = QdrantClientManager.get_client(db_path)
     collection_name = "documents"
 
     # 쿼리 키워드 추출
@@ -361,7 +432,7 @@ def search_similar_chunks(
 ) -> List[Document]:
     """2단계 하이브리드 검색"""
     try:
-        client = QdrantClient(path=db_path)
+        client = QdrantClientManager.get_client(db_path)
         collection_name = "documents"
 
         # 1단계: 키워드 기반으로 25개 후보 선택
@@ -405,3 +476,5 @@ def search_similar_chunks(
     except Exception as e:
         print(f"검색 중 오류 발생: {str(e)}")
         return []
+    finally:
+        QdrantClientManager.close_client()
