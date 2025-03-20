@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph
 import pandas as pd
 import os
 from dotenv import load_dotenv
+import json
 
 from langchain_openai import AzureChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
@@ -49,22 +50,6 @@ system_prompt_parser = PydanticOutputParser(pydantic_object=SystemPromptOutput)
 ##########
 
 
-class AnalysisOutput(BaseModel):
-    failure_analysis: str = Field(
-        ..., description="실패 사례들의 공통적인 문제점과 패턴 분석"
-    )
-    improvement_techniques: str = Field(
-        ..., description="적용할 수 있는 프롬프팅 기법들과 그 이유"
-    )
-
-
-class ImprovementOutput(BaseModel):
-    system_prompt: str = Field(..., description="개선된 시스템 프롬프트")
-    reason: str = Field(
-        ..., description="프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
-    )
-
-
 def run_eval_agent(results, project_id):
     if not results:
         print("⚠️ 평가할 결과가 없습니다.")
@@ -96,6 +81,7 @@ def run_eval_agent(results, project_id):
 
     def find_best_prompts(state):
         df = state["df"]
+        # 각 프롬프트별 전체 시도 횟수와 성공 횟수를 계산
         total_counts = (
             df.groupby(["model", "system_prompt"])
             .size()
@@ -154,10 +140,15 @@ def run_eval_agent(results, project_id):
             (df["model"] == model)
             & (df["system_prompt"] == system_prompt)
             & (df["eval_pass"] == "X")
-        ][["user_prompt", "result", "eval_keyword"]].to_dict("records")
+        ][["user_prompt", "assistant", "eval_reason"]].to_dict("records")
 
         analysis_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
-실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요."""
+실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요.
+다음 JSON 형식으로 응답해주세요:
+{
+    "failure_analysis": "실패 사례들의 공통적인 문제점과 패턴 분석",
+    "improvement_techniques": "적용할 수 있는 프롬프팅 기법들과 그 이유 (예: Chain of Thought, Few-shot 등)"
+}"""
 
         analysis_input = (
             f"다음은 현재 시스템 프롬프트와 실패한 케이스들입니다:\n\n"
@@ -169,8 +160,8 @@ def run_eval_agent(results, project_id):
             analysis_input += (
                 f"\n케이스 {i}:\n"
                 f"사용자 입력: {case['user_prompt']}\n"
-                f"AI 응답: {case['result']}\n"
-                f"실패 이유: {case['eval_keyword']}\n"
+                f"AI 응답: {case['assistant']}\n"
+                f"실패 이유: {case['eval_reason']}\n"
             )
 
         try:
@@ -179,38 +170,23 @@ def run_eval_agent(results, project_id):
                 [
                     SystemMessage(content=analysis_system_message),
                     HumanMessage(content=analysis_input),
-                ],
-                response_format=AnalysisOutput.model_json_schema(),
-            )
-            analysis_result = AnalysisOutput.parse_raw(analysis_response.content)
-
-            # RAG로 프롬프팅 기법 증강
-            prompting_techniques_query = f"""
-            프롬프팅 기법 추천:
-            {analysis_result.improvement_techniques}
-            이와 관련된 구체적인 프롬프팅 기법과 예시
-            """
-
-            from agent.rag_module import search_similar_chunks
-
-            relevant_docs = search_similar_chunks(prompting_techniques_query, top_k=3)
-
-            additional_techniques = "\n\n".join(
-                [
-                    f"관련 프롬프팅 기법 참고:\n{doc.page_content}"
-                    for doc in relevant_docs
                 ]
             )
+            analysis_result = json.loads(analysis_response.content)
 
             # 2단계: 개선된 프롬프트 생성
             improvement_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
-실패 분석 결과와 추천된 프롬프팅 기법을 바탕으로, 개선된 시스템 프롬프트를 생성해주세요."""
+실패 분석 결과와 추천된 프롬프팅 기법을 바탕으로, 개선된 시스템 프롬프트를 생성해주세요.
+다음 JSON 형식으로 응답해주세요:
+{
+    "system_prompt": "개선된 시스템 프롬프트",
+    "reason": "프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
+}"""
 
             improvement_input = (
                 f"현재 시스템 프롬프트:\n{system_prompt}\n\n"
-                f"실패 분석 결과:\n{analysis_result.failure_analysis}\n\n"
-                f"추천된 프롬프팅 기법:\n{analysis_result.improvement_techniques}\n\n"
-                f"추가 참고할 프롬프팅 기법:\n{additional_techniques}\n\n"
+                f"실패 분석 결과:\n{analysis_result['failure_analysis']}\n\n"
+                f"추천된 프롬프팅 기법:\n{analysis_result['improvement_techniques']}\n\n"
                 f"위 분석 결과와 추천된 프롬프팅 기법을 적용하여 개선된 시스템 프롬프트를 생성해주세요."
             )
 
@@ -218,21 +194,17 @@ def run_eval_agent(results, project_id):
                 [
                     SystemMessage(content=improvement_system_message),
                     HumanMessage(content=improvement_input),
-                ],
-                response_format=ImprovementOutput.model_json_schema(),
+                ]
             )
-            improvement_result = ImprovementOutput.model_validate_json(
-                improvement_response.content
-            )
+            improvement_result = json.loads(improvement_response.content)
 
             state["improved_prompt"] = {
                 "model": model,
                 "original_prompt": system_prompt,
-                "improved_prompt": improvement_result.system_prompt,
-                "failure_analysis": analysis_result.failure_analysis,
-                "improvement_techniques": analysis_result.improvement_techniques,
-                "additional_techniques": additional_techniques,
-                "reason": improvement_result.reason,
+                "improved_prompt": improvement_result["system_prompt"],
+                "failure_analysis": analysis_result["failure_analysis"],
+                "improvement_techniques": analysis_result["improvement_techniques"],
+                "reason": improvement_result["reason"],
             }
 
         except Exception as e:
