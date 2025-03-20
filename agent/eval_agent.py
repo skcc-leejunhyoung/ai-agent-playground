@@ -140,7 +140,7 @@ def run_eval_agent(results, project_id):
             (df["model"] == model)
             & (df["system_prompt"] == system_prompt)
             & (df["eval_pass"] == "X")
-        ][["user_prompt", "assistant", "eval_reason"]].to_dict("records")
+        ][["user_prompt", "result", "eval_keyword"]].to_dict("records")
 
         analysis_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
 실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요.
@@ -160,8 +160,8 @@ def run_eval_agent(results, project_id):
             analysis_input += (
                 f"\n케이스 {i}:\n"
                 f"사용자 입력: {case['user_prompt']}\n"
-                f"AI 응답: {case['assistant']}\n"
-                f"실패 이유: {case['eval_reason']}\n"
+                f"AI 응답: {case['result']}\n"
+                f"실패 이유: {case['eval_keyword']}\n"
             )
 
         try:
