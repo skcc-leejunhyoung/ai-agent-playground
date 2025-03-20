@@ -192,7 +192,12 @@ def run_eval_agent(results, project_id):
         ][["user_prompt", "result", "eval_keyword"]].to_dict("records")
 
         analysis_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
-실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요. json 형식으로 반환해주세요."""
+실패 사례들을 분석하여 문제점을 파악하고, 적용 가능한 프롬프팅 기법을 제안해주세요.
+JSON 형식으로 다음 필드를 포함하여 응답해주세요:
+{
+    "failure_analysis": "실패 사례들의 공통적인 문제점과 패턴 분석",
+    "improvement_techniques": "적용할 수 있는 프롬프팅 기법들과 그 이유"
+}"""
 
         analysis_input = (
             f"다음은 현재 시스템 프롬프트와 실패한 케이스들입니다:\n\n"
@@ -213,7 +218,10 @@ def run_eval_agent(results, project_id):
             analysis_response = get_completion(
                 messages=[
                     {"role": "system", "content": analysis_system_message},
-                    {"role": "user", "content": analysis_input},
+                    {
+                        "role": "user",
+                        "content": analysis_input + "\nJSON 형식으로 응답해주세요.",
+                    },
                 ],
                 schema={"type": "json_object"},
             )
@@ -239,7 +247,12 @@ def run_eval_agent(results, project_id):
 
             # 2단계: 개선된 프롬프트 생성
             improvement_system_message = """당신은 뛰어난 AI 프롬프트 엔지니어입니다.
-실패 분석 결과와 추천된 프롬프팅 기법을 바탕으로, 개선된 시스템 프롬프트를 생성해주세요. json 형식으로 반환해주세요."""
+실패 분석 결과와 추천된 프롬프팅 기법을 바탕으로, 개선된 시스템 프롬프트를 생성해주세요.
+JSON 형식으로 다음 필드를 포함하여 응답해주세요:
+{
+    "system_prompt": "개선된 시스템 프롬프트",
+    "reason": "프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
+}"""
 
             improvement_input = (
                 f"현재 시스템 프롬프트:\n{system_prompt}\n\n"
@@ -252,7 +265,10 @@ def run_eval_agent(results, project_id):
             improvement_response = get_completion(
                 messages=[
                     {"role": "system", "content": improvement_system_message},
-                    {"role": "user", "content": improvement_input},
+                    {
+                        "role": "user",
+                        "content": improvement_input + "\nJSON 형식으로 응답해주세요.",
+                    },
                 ],
                 schema={"type": "json_object"},
             )
