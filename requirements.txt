@@ -13,4 +13,3 @@ nltk
 konlpy
 qdrant-client
 stqdm
-certifi

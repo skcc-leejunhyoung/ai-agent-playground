@@ -19,6 +19,7 @@ from qdrant_client.http.models import (
     FieldCondition,
     MatchValue,
 )
+from stqdm import stqdm
 
 # 환경 변수 로드
 load_dotenv()
@@ -119,10 +120,12 @@ def process_document(
         # 디버깅 정보 출력
         print(f"추출된 텍스트 길이: {len(text)}")
 
-        # 텍스트 분할
+        # 텍스트 분할 설정
+        chunk_size = 500
+        chunk_overlap = 50
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,  # 50 토큰 중복
             length_function=len,
             separators=["\n\n", "\n", ".", "!", "?", ",", " "],
         )
@@ -138,7 +141,10 @@ def process_document(
         # Document 객체 생성
         documents = []
         embeddings = []
-        for i, chunk in enumerate(chunks):
+
+        for i, chunk in stqdm(
+            enumerate(chunks), total=len(chunks), desc="청크 처리 중"
+        ):
             metadata = create_metadata(chunk, source, i)
             embedding = (
                 client.embeddings.create(
@@ -192,20 +198,59 @@ def save_vector_db(
 
 
 def process_for_rag(
-    source: str, content_type: str = "url", db_path: str = "vector_db"
+    source: str, content_type: str = "txt", db_path: str = "vector_db"
 ) -> List[Document]:
-    """RAG를 위한 문서 처리 메인 함수"""
+    """RAG를 위한 모든 준비를 수행하는 메인 함수"""
     try:
+        # 1. NLTK 리소스 다운로드
+        print("NLTK 리소스 다운로드 중...")
+        download_nltk_resources()
+
+        # 2. 벡터 DB 초기화 확인
+        print("벡터 DB 초기화 중...")
+        if not os.path.exists(db_path):
+            os.makedirs(db_path)
+            print(f"벡터 DB 디렉토리 생성됨: {db_path}")
+
+        # 3. 문서 처리 및 임베딩 생성
+        print("문서 처리 및 임베딩 생성 중...")
         documents, embeddings = process_document(source, content_type)
+        if not documents:
+            raise Exception("문서 처리 결과가 없습니다.")
         print(f"처리된 청크 수: {len(documents)}")
 
-        # 벡터 DB 저장
+        # 4. 벡터 DB 저장
+        print("벡터 DB에 저장 중...")
         save_vector_db(documents, embeddings, db_path)
         print(f"벡터 DB가 {db_path}에 저장되었습니다.")
 
+        # 5. 검색 테스트 수행
+        print("검색 기능 테스트 중...")
+        test_query = documents[0].page_content[
+            :50
+        ]  # 첫 번째 문서의 일부를 테스트 쿼리로 사용
+        test_results = search_similar_chunks(test_query, top_k=1, db_path=db_path)
+        if not test_results:
+            print("경고: 검색 테스트 실패")
+        else:
+            print("검색 기능 테스트 완료")
+
+        # 6. 처리 결과 요약
+        summary = {
+            "총 청크 수": len(documents),
+            "평균 청크 길이": sum(len(doc.page_content) for doc in documents)
+            / len(documents),
+            "저장된 키워드 수": sum(len(doc.metadata["keywords"]) for doc in documents),
+            "벡터 DB 경로": db_path,
+        }
+        print("\nRAG 처리 결과 요약:")
+        for key, value in summary.items():
+            print(f"{key}: {value}")
+
         return documents
+
     except Exception as e:
-        print(f"문서 처리 중 오류 발생: {str(e)}")
+        print(f"RAG 준비 중 오류 발생: {str(e)}")
         return []
 
 

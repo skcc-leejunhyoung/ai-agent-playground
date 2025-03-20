@@ -347,23 +347,9 @@ if st.session_state.get("task_state") == "delete_project":
     st.rerun()
 
 
-# RAG 섹션
-with st.container():
-    st.markdown(
-        '<div style="text-align: center; margin-bottom: 1rem;"><h2>RAG 학습</h2></div>',
-        unsafe_allow_html=True,
-    )
+##########
 
-    # 파일 업로드 섹션
-    st.markdown(
-        """
-        <div style="border: 1px solid #ddd; padding: 1rem; border-radius: 10px;">
-            <h3 style="text-align: center;">파일 업로드로 학습</h3>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+with st.popover("RAG 학습"):
     uploaded_file = st.file_uploader(
         "텍스트 또는 HTML 파일 업로드", type=["txt", "html", "htm"]
     )
@@ -374,22 +360,17 @@ with st.container():
                 from stqdm import stqdm
 
                 with st.spinner("RAG 학습 중..."):
-                    # 진행 상황 표시
                     progress_text = st.empty()
                     progress_text.text("파일 처리 중...")
 
-                    # 파일 확장자 확인
                     file_extension = uploaded_file.name.split(".")[-1].lower()
 
-                    # 임시 파일로 저장
                     temp_path = f"temp_{uploaded_file.name}"
                     with open(temp_path, "wb") as f:
                         f.write(uploaded_file.getvalue())
 
-                    # 문서 처리
                     documents = process_for_rag(temp_path, content_type=file_extension)
 
-                    # 임시 파일 삭제
                     os.remove(temp_path)
 
                     if documents:
