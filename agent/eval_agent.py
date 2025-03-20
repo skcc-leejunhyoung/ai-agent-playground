@@ -4,12 +4,10 @@ from langgraph.graph import StateGraph
 import pandas as pd
 import os
 from dotenv import load_dotenv
-from openai import AzureOpenAI
-import json
 
 from langchain_openai import AzureChatOpenAI
 from langchain.schema import HumanMessage, SystemMessage
-import pydantic
+from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
 
@@ -23,57 +21,21 @@ AOAI_ENDPOINT = os.getenv("AOAI_ENDPOINT")
 AOAI_DEPLOY_GPT4O = os.getenv("AOAI_DEPLOY_GPT4O")
 AOAI_API_VERSION = "2024-02-15-preview"
 
-client = AzureOpenAI(
-    api_key=AOAI_API_KEY,
-    api_version=AOAI_API_VERSION,
+llm_gpt4o = AzureChatOpenAI(
+    openai_api_key=AOAI_API_KEY,
     azure_endpoint=AOAI_ENDPOINT,
+    api_version=AOAI_API_VERSION,
+    deployment_name=AOAI_DEPLOY_GPT4O,
+    temperature=0.7,
+    max_tokens=500,
+    model_kwargs={"response_format": {"type": "json_object"}},
 )
-
-
-def get_completion(messages, schema):
-    """Azure OpenAI API를 사용하여 응답 생성"""
-    try:
-        response = client.chat.completions.create(
-            model=AOAI_DEPLOY_GPT4O,
-            messages=messages,
-            response_format=schema,
-            temperature=0.7,
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"API 호출 중 오류 발생: {e}")
-        raise
 
 
 ##########
 
 
-class OpenAiResponseFormatGenerator(pydantic.json_schema.GenerateJsonSchema):
-    def generate(self, schema, mode="validation"):
-        json_schema = super().generate(schema, mode=mode)
-        json_schema = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": json_schema.pop("title"),
-                "schema": json_schema,
-            },
-        }
-        return json_schema
-
-
-class StrictBaseModel(BaseModel):
-    class Config:
-        extra = "forbid"
-
-    @classmethod
-    def model_json_schema(cls, **kwargs):
-        return super().model_json_schema(
-            schema_generator=OpenAiResponseFormatGenerator, **kwargs
-        )
-
-
-class SystemPromptOutput(StrictBaseModel):
+class SystemPromptOutput(BaseModel):
     system_prompt: str = Field(..., description="최종 개선된 시스템 프롬프트입니다.")
     reason: str = Field(
         ...,
@@ -81,7 +43,13 @@ class SystemPromptOutput(StrictBaseModel):
     )
 
 
-class AnalysisOutput(StrictBaseModel):
+system_prompt_parser = PydanticOutputParser(pydantic_object=SystemPromptOutput)
+
+
+##########
+
+
+class AnalysisOutput(BaseModel):
     failure_analysis: str = Field(
         ..., description="실패 사례들의 공통적인 문제점과 패턴 분석"
     )
@@ -90,14 +58,11 @@ class AnalysisOutput(StrictBaseModel):
     )
 
 
-class ImprovementOutput(StrictBaseModel):
+class ImprovementOutput(BaseModel):
     system_prompt: str = Field(..., description="개선된 시스템 프롬프트")
     reason: str = Field(
         ..., description="프롬프트를 이렇게 개선한 이유에 대한 상세 설명(markdown 포맷)"
     )
-
-
-##########
 
 
 def run_eval_agent(results, project_id):
@@ -210,14 +175,14 @@ def run_eval_agent(results, project_id):
 
         try:
             # 1단계: 실패 분석 및 프롬프팅 기법 추천
-            analysis_response = get_completion(
-                messages=[
-                    {"role": "system", "content": analysis_system_message},
-                    {"role": "user", "content": analysis_input},
+            analysis_response = llm_gpt4o.invoke(
+                [
+                    SystemMessage(content=analysis_system_message),
+                    HumanMessage(content=analysis_input),
                 ],
-                schema={"type": "json_object"},
+                response_format=AnalysisOutput.model_json_schema(),
             )
-            analysis_result = AnalysisOutput.parse_raw(analysis_response)
+            analysis_result = AnalysisOutput.parse_raw(analysis_response.content)
 
             # RAG로 프롬프팅 기법 증강
             prompting_techniques_query = f"""
@@ -249,14 +214,16 @@ def run_eval_agent(results, project_id):
                 f"위 분석 결과와 추천된 프롬프팅 기법을 적용하여 개선된 시스템 프롬프트를 생성해주세요."
             )
 
-            improvement_response = get_completion(
-                messages=[
-                    {"role": "system", "content": improvement_system_message},
-                    {"role": "user", "content": improvement_input},
+            improvement_response = llm_gpt4o.invoke(
+                [
+                    SystemMessage(content=improvement_system_message),
+                    HumanMessage(content=improvement_input),
                 ],
-                schema={"type": "json_object"},
+                response_format=ImprovementOutput.model_json_schema(),
             )
-            improvement_result = ImprovementOutput.parse_raw(improvement_response)
+            improvement_result = ImprovementOutput.model_validate_json(
+                improvement_response.content
+            )
 
             state["improved_prompt"] = {
                 "model": model,
