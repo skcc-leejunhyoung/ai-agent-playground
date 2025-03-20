@@ -274,10 +274,10 @@ async def run_prompt_generation_agent_async(
         rg = state["role_guidance"]
         oe = state["output_example"]
         rs = state["role_summary"]
-        system_msg = "##Role : You are an advanced data and functionality compliance review assistant. ##instructions : Given ##role, ##instructions, ##information, and the output example from processing data inputs, carefully review the criteria match of all parameters and ensure the generated result adheres entirely to the initial structure and specifications. Identify mismatches and correct them. ##information : The system should clarify the consistency between input-derived parameters and the generated outputs. Any inconsistency should be iteratively fixed until the output conforms satisfactorily to predefined standards. ##output_example : When validating against the specified roles and functionality, ensure all input data aligns with the outlined requirements and produce a compliance report summarizing the validation process."
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안이 개괄식으로 표현된 평가기준을 완벽하게 만족하는지 평가해주세요. 평가기준을 완벽하게 만족한다면 is_complete 를 True로 설정해주세요. 평가기준을 만족하지 못했다면 is_complete 를 False로 설정하고 만족하지 못한 평가기준 항목을 수정하지말고 missing_items에 그대로 작성해주세요."
         user_msg = (
-            f"역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
-            f"요약:{rs['summary']}, 예시:{oe['output_example']}"
+            f"프롬프트 초안 - 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, 예시:{oe['output_example']}"
+            f"평가 기준:{rs['summary']}"
         )
         async for part in parse_chat_streaming_gen(
             system_msg, user_msg, CoverageEvaluationOutput
@@ -292,11 +292,10 @@ async def run_prompt_generation_agent_async(
         oe = state["output_example"]
         ce = state["coverage_evaluation"]
         rs = state["role_summary"]
-        system_msg = "[시스템] Node5.1: 보완"
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 당신에게는 역할, 지시, 정보, 예시로 구성된 시스템 프롬프트 초안이 주어집니다. 이 초안은 평가기준 중 평가 기준 미달 항목이 있습니다. 이 항목을 보완하여 완벽한 시스템 프롬프트를 만들어주세요. 시스템 프롬프트 초안의 내용을 그대로 보존하고 평가 기준 미달 항목만 보완해주세요."
         user_msg = (
-            f"누락:{ce['missing_items']}, 요약:{rs['summary']}, "
-            f"현재 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
-            f"출력 예시:{oe['output_example']}"
+            f"평가 기준 미달:{ce['missing_items']}, 전체 평가기준 :{rs['summary']}, "
+            f"프롬프트 초안 - 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, 예시:{oe['output_example']}"
         )
         async for part in parse_chat_streaming_gen(
             system_msg, user_msg, CoverageFixOutput
@@ -461,62 +460,211 @@ async def run_prompt_generation_agent_async(
             "resolution", ""
         )
 
-    # 만약 충돌이 있다면 해결 노드 4.1 -> 다시 4번 노드를 반복 등 로직이 가능하나,
-    # 여기서는 단순 예시로 1회만 시연하고 pass 처리 생략
+    # 충돌 해결 루프: has_conflicts가 False가 될 때까지 반복
+    conflict_iteration = 0
+    max_conflict_iterations = 3  # 무한 루프 방지를 위한 최대 반복 횟수
+
+    while (
+        state["conflict_evaluation"]["has_conflicts"]
+        and conflict_iteration < max_conflict_iterations
+    ):
+        conflict_iteration += 1
+        update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 시작", "info")
+
+        # 충돌이 있으면 4.1 해결 노드 실행
+        node4_1_gen = node_system_4_1_conflict_resolution(state)
+        node4_1_parsed_json = None
+
+        async for part in node4_1_gen:
+            yield part
+            if part.startswith("__FINAL_PARSE__"):
+                raw_json = part.replace("__FINAL_PARSE__:", "")
+                node4_1_parsed_json = json.loads(raw_json)
+            elif part.startswith("__PARSED_OBJECT__"):
+                pass
+
+        update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 완료", "info")
+        time.sleep(1)
+
+        # 해결된 정보로 상태 업데이트
+        if node4_1_parsed_json:
+            state["role_guidance"]["role"] = node4_1_parsed_json.get("role", "")
+            state["role_guidance"]["instructions"] = node4_1_parsed_json.get(
+                "instructions", ""
+            )
+            state["role_guidance"]["information"] = node4_1_parsed_json.get(
+                "information", ""
+            )
+            state["output_example"]["output_example"] = node4_1_parsed_json.get(
+                "output_example", ""
+            )
+
+        # 충돌 재평가를 위해 노드4 다시 실행
+        update_status(f"4번 노드 (재평가) #{conflict_iteration} 시작", "info")
+        node4_gen = node_system_4_conflict_evaluation(state)
+        node4_parsed_json = None
+
+        async for part in node4_gen:
+            yield part
+            if part.startswith("__FINAL_PARSE__"):
+                raw_json = part.replace("__FINAL_PARSE__:", "")
+                node4_parsed_json = json.loads(raw_json)
+            elif part.startswith("__PARSED_OBJECT__"):
+                pass
+
+        update_status(f"4번 노드 (재평가) #{conflict_iteration} 완료", "info")
+        time.sleep(1)
+
+        # 재평가 결과 상태 업데이트
+        if node4_parsed_json:
+            state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
+                "has_conflicts", False
+            )
+            state["conflict_evaluation"]["conflicts"] = node4_parsed_json.get(
+                "conflicts", []
+            )
+            state["conflict_evaluation"]["resolution"] = node4_parsed_json.get(
+                "resolution", ""
+            )
+
+    if (
+        conflict_iteration == max_conflict_iterations
+        and state["conflict_evaluation"]["has_conflicts"]
+    ):
+        update_status(
+            "최대 충돌 해결 반복 횟수에 도달했습니다. 남은 충돌이 있을 수 있습니다.",
+            "warning",
+        )
 
     ################################
     # 3) 노드5 (커버리지 평가)
     ################################
     update_status("5번 노드 (커버리지 평가) 시작", "info")
-    node5_gen = node_system_5_coverage_evaluation(state)
-    node5_parsed_json = None
 
-    async for part in node5_gen:
-        yield part
-        if part.startswith("__FINAL_PARSE__"):
-            raw_json = part.replace("__FINAL_PARSE__:", "")
-            node5_parsed_json = json.loads(raw_json)
-        elif part.startswith("__PARSED_OBJECT__"):
-            pass
+    # 커버리지 평가 및 보완 루프
+    coverage_iteration = 0
+    max_coverage_iterations = 3  # 무한 루프 방지를 위한 최대 반복 횟수
+    is_complete = False
 
-    update_status("5번 노드 완료", "info")
-    time.sleep(2)
-    if node5_parsed_json:
-        state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
-            "is_complete", False
-        )
-        state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
-            "missing_items", []
-        )
+    while not is_complete and coverage_iteration < max_coverage_iterations:
+        print(state["role_guidance"])
+        print(state["output_example"])
+        print(state["role_summary"])
+        coverage_iteration += 1
+        update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 시작", "info")
 
-    # 만약 누락된 사항 있다면 5.1 → 재평가 등 로직
+        # 5번 노드 (커버리지 평가) 실행
+        node5_gen = node_system_5_coverage_evaluation(state)
+        node5_parsed_json = None
+        node5_buffer = ""
 
-    update_status("5.1 (커버리지 보완)", "info")
-    node5_1_gen = node_system_5_1_coverage_fix(state)
-    node5_1_parsed_json = None
+        # 모든 응답을 수신
+        async for part in node5_gen:
+            yield part
 
-    async for part in node5_1_gen:
-        yield part
-        if part.startswith("__FINAL_PARSE__"):
-            raw_json = part.replace("__FINAL_PARSE__:", "")
-            node5_1_parsed_json = json.loads(raw_json)
-        elif part.startswith("__PARSED_OBJECT__"):
-            pass
+            # __NODE5_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
+            if part.startswith("__NODE5_PARTIAL__:"):
+                content = part[len("__NODE5_PARTIAL__:") :]
+                node5_buffer += content
 
-    update_status("5.1번 노드 완료", "info")
-    time.sleep(2)
+        # 전체 수신 후 한 번만 파싱 시도
+        try:
+            # __FINAL_PARSE__: 태그 찾기
+            if "__FINAL_PARSE__:" in node5_buffer:
+                # __FINAL_PARSE__: 이후의 문자열 추출
+                json_str = node5_buffer.split("__FINAL_PARSE__:", 1)[1].strip()
 
-    if node5_1_parsed_json:
-        # 보완된 결과를 state에 반영(필요시)
-        state["role_guidance"]["role"] = node5_1_parsed_json.get("role", "")
-        state["role_guidance"]["instructions"] = node5_1_parsed_json.get(
-            "instructions", ""
-        )
-        state["role_guidance"]["information"] = node5_1_parsed_json.get(
-            "information", ""
-        )
-        state["output_example"]["output_example"] = node5_1_parsed_json.get(
-            "output_example", ""
+                # __PARSED_OBJECT__: 태그가 있으면 그 앞부분까지만 추출
+                if "__PARSED_OBJECT__:" in json_str:
+                    json_str = json_str.split("__PARSED_OBJECT__:", 1)[0].strip()
+
+                # JSON 파싱
+                node5_parsed_json = json.loads(json_str)
+                update_status(f"5번 노드 결과 파싱 성공", "info")
+            else:
+                update_status(
+                    f"5번 노드에서 __FINAL_PARSE__ 태그를 찾을 수 없습니다", "warning"
+                )
+        except Exception as e:
+            update_status(f"5번 노드 JSON 파싱 오류: {str(e)}", "error")
+            update_status(f"문제된 JSON 문자열: {node5_buffer[:200]}...", "debug")
+
+        update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 완료", "info")
+        time.sleep(1)
+
+        # 평가 결과 상태 업데이트
+        if node5_parsed_json:
+            state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
+                "is_complete", False
+            )
+            state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
+                "missing_items", []
+            )
+            is_complete = state["coverage_evaluation"]["is_complete"]
+
+        # 커버리지가 완전하면 루프 종료
+        if is_complete:
+            update_status("커버리지 평가 완료: 모든 항목이 충족됨", "info")
+            break
+
+        # 누락된 항목이 있으면 5.1 노드(커버리지 보완) 실행
+        update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 시작", "info")
+        node5_1_gen = node_system_5_1_coverage_fix(state)
+        node5_1_parsed_json = None
+        node5_1_buffer = ""
+
+        # 모든 응답을 수신
+        async for part in node5_1_gen:
+            yield part
+
+            # __NODE5_1_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
+            if part.startswith("__NODE5_1_PARTIAL__:"):
+                content = part[len("__NODE5_1_PARTIAL__:") :]
+                node5_1_buffer += content
+
+        # 전체 수신 후 한 번만 파싱 시도
+        try:
+            # __FINAL_PARSE__: 태그 찾기
+            if "__FINAL_PARSE__:" in node5_1_buffer:
+                # __FINAL_PARSE__: 이후의 문자열 추출
+                json_str = node5_1_buffer.split("__FINAL_PARSE__:", 1)[1].strip()
+
+                # __PARSED_OBJECT__: 태그가 있으면 그 앞부분까지만 추출
+                if "__PARSED_OBJECT__:" in json_str:
+                    json_str = json_str.split("__PARSED_OBJECT__:", 1)[0].strip()
+
+                # JSON 파싱
+                node5_1_parsed_json = json.loads(json_str)
+                update_status(f"5.1번 노드 결과 파싱 성공", "info")
+            else:
+                update_status(
+                    f"5.1번 노드에서 __FINAL_PARSE__ 태그를 찾을 수 없습니다", "warning"
+                )
+        except Exception as e:
+            update_status(f"5.1번 노드 JSON 파싱 오류: {str(e)}", "error")
+            update_status(f"문제된 JSON 문자열: {node5_1_buffer[:200]}...", "debug")
+
+        update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 완료", "info")
+        time.sleep(1)
+
+        # 보완된 결과를 상태에 반영
+        if node5_1_parsed_json:
+            state["role_guidance"]["role"] = node5_1_parsed_json.get("role", "")
+            state["role_guidance"]["instructions"] = node5_1_parsed_json.get(
+                "instructions", ""
+            )
+            state["role_guidance"]["information"] = node5_1_parsed_json.get(
+                "information", ""
+            )
+            state["output_example"]["output_example"] = node5_1_parsed_json.get(
+                "output_example", ""
+            )
+
+    # 최대 반복 횟수 도달 시 경고
+    if coverage_iteration == max_coverage_iterations and not is_complete:
+        update_status(
+            "최대 커버리지 평가 반복 횟수에 도달했습니다. 여전히 누락된 항목이 있을 수 있습니다.",
+            "warning",
         )
 
     ################################
