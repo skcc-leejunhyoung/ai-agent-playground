@@ -1133,9 +1133,29 @@ def generate_system_prompt_dialog():
                     json_part = content.split("__FINAL_PARSE__:", 1)[1].strip()
 
                 data = json.loads(json_part)
-                result_containers[node_key].markdown(
-                    f"**{node_key.replace('__', '')} 결과**:\n\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
-                )
+                with result_containers[node_key].expander(
+                    f"**:blue[{node_key.replace('__', '').replace('NODE1_PARTIAL', '역할 / 지시사항 / 추가정보 생성').replace('NODE2_PARTIAL', '예시출력 생성').replace('NODE3_PARTIAL', '유저 의도 분석').replace('NODE4_PARTIAL', '조건 충돌 검사').replace('NODE5_PARTIAL', '의도 반영 평가').replace('NODE5_1_PARTIAL', '의도 반영 개선').replace('NODE6_PARTIAL', '최종 시스템 프롬프트')} 결과]**",
+                    expanded=(node_key == "__NODE6_PARTIAL__"),
+                ):
+                    st.markdown(
+                        f"```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
+                    )
+
+                    # NODE6(최종 결과)인 경우 시스템 프롬프트로 저장
+                    if node_key == "__NODE6_PARTIAL__" and "system_prompt" in data:
+                        project_id = st.session_state.get("project", {}).get(
+                            "project_id"
+                        )
+                        if project_id:
+                            new_prompt_id = add_system_prompt(
+                                data["system_prompt"], project_id
+                            )
+                            st.session_state["system_single_idx"] = len(
+                                st.session_state.get("system_prompts", [])
+                            )
+                            st.toast(
+                                "새로운 시스템 프롬프트가 생성되었습니다!", icon="✨"
+                            )
                 return True
             except Exception as e:
                 result_containers[node_key].error(f"파싱 에러 ({node_key}): {e}")
@@ -1143,23 +1163,6 @@ def generate_system_prompt_dialog():
 
     if generate_btn and user_intention:
         for token in generate_system_prompt_by_intention_streaming(user_intention):
-            # 최종 결과 처리
-            if token.startswith("__RESULT_DATA__"):
-                json_str = token.replace("__RESULT_DATA__:", "")
-                try:
-                    data = json.loads(json_str)
-                    fp = data.get("final_prompt", {})
-                    sp = fp.get("system_prompt", "")
-                    rs = fp.get("reasoning", "")
-                    if sp:
-                        st.success("System Prompt created!")
-                        final_container.markdown(
-                            f"**System Prompt**\n```\n{sp}\n```\n\n**Reasoning**:\n```\n{rs}\n```"
-                        )
-                except Exception as e:
-                    st.error(f"파싱 에러: {e}")
-                continue
-
             # 노드별 내용 처리
             if ":" in token:
                 node_prefix, content = token.split(":", 1)

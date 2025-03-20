@@ -163,7 +163,7 @@ async def parse_chat_streaming_gen(
         except Exception as e:
             if attempt < max_retries - 1:
                 # 재시도 전에 잠시 쉼
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
                 continue
             else:
                 yield f"__FINAL_PARSE_ERROR__:{str(e)}"
@@ -305,18 +305,32 @@ async def run_prompt_generation_agent_async(
     async def node_system_6_final(state: dict):
         """
         6번 노드: 최종 시스템 프롬프트 생성
+        마크다운 형식으로 role, instructions, information, output_example을 포맷팅
         """
         rg = state["role_guidance"]
         oe = state["output_example"]
-        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 유저 프롬프트에 전달된 정보를 빠짐없이 system_prompt 에 마크다운 형태로 작성하세요."
-        user_msg = (
-            f"역할:{rg['role']}, 지시:{rg['instructions']}, "
-            f"정보:{rg['information']}, 예시:{oe['output_example']}"
-        )
-        async for part in parse_chat_streaming_gen(
-            system_msg, user_msg, FinalSystemPromptOutput
-        ):
-            yield f"__NODE6_PARTIAL__:{part}"
+        number_of_instructions = len(rg["instructions"].split("\n"))
+
+        # 마크다운 형식으로 포맷팅
+        system_prompt = f"""## You must Act as
+{rg['role']}
+
+## MUST FOLLOW these {number_of_instructions} Instructions below
+{rg['instructions']}
+
+## Information
+{rg['information']}
+
+## Output Example
+{oe['output_example']}"""
+
+        result = {
+            "system_prompt": system_prompt,
+            "reasoning": "시스템 프롬프트가 마크다운 형식으로 성공적으로 생성되었습니다.",
+        }
+
+        # FinalSystemPromptOutput 형식으로 직접 반환
+        yield f"__NODE6_PARTIAL__:__FINAL_PARSE__:{json.dumps(result)}"
 
     ################################
     # 상태 저장용 dict
@@ -377,6 +391,7 @@ async def run_prompt_generation_agent_async(
 
                     # 버퍼 업데이트
                     new_buffer = buffer + part
+                    time.sleep(0.03)
                     generators[i] = (gen, name, done, new_buffer)
 
                     # FINAL_PARSE 확인
@@ -429,7 +444,6 @@ async def run_prompt_generation_agent_async(
         state["role_summary"]["summary"] = parsed_results["node3"].get("summary", [])
 
     update_status("1,2,3번 노드 (병렬) 완료", "info")
-    time.sleep(2)
 
     ################################
     # 2) 노드4 (충돌 평가)
@@ -439,6 +453,7 @@ async def run_prompt_generation_agent_async(
     node4_parsed_json = None
 
     async for part in node4_gen:
+        time.sleep(0.03)
         yield part
         if part.startswith("__FINAL_PARSE__"):
             raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -447,7 +462,6 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("4번 노드 완료", "info")
-    time.sleep(2)
 
     if node4_parsed_json:
         state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
@@ -476,6 +490,7 @@ async def run_prompt_generation_agent_async(
         node4_1_parsed_json = None
 
         async for part in node4_1_gen:
+            time.sleep(0.03)
             yield part
             if part.startswith("__FINAL_PARSE__"):
                 raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -484,7 +499,6 @@ async def run_prompt_generation_agent_async(
                 pass
 
         update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 완료", "info")
-        time.sleep(1)
 
         # 해결된 정보로 상태 업데이트
         if node4_1_parsed_json:
@@ -505,6 +519,7 @@ async def run_prompt_generation_agent_async(
         node4_parsed_json = None
 
         async for part in node4_gen:
+            time.sleep(0.03)
             yield part
             if part.startswith("__FINAL_PARSE__"):
                 raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -513,7 +528,6 @@ async def run_prompt_generation_agent_async(
                 pass
 
         update_status(f"4번 노드 (재평가) #{conflict_iteration} 완료", "info")
-        time.sleep(1)
 
         # 재평가 결과 상태 업데이트
         if node4_parsed_json:
@@ -547,9 +561,6 @@ async def run_prompt_generation_agent_async(
     is_complete = False
 
     while not is_complete and coverage_iteration < max_coverage_iterations:
-        print(state["role_guidance"])
-        print(state["output_example"])
-        print(state["role_summary"])
         coverage_iteration += 1
         update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 시작", "info")
 
@@ -560,6 +571,7 @@ async def run_prompt_generation_agent_async(
 
         # 모든 응답을 수신
         async for part in node5_gen:
+            time.sleep(0.03)
             yield part
 
             # __NODE5_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
@@ -590,16 +602,18 @@ async def run_prompt_generation_agent_async(
             update_status(f"문제된 JSON 문자열: {node5_buffer[:200]}...", "debug")
 
         update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 완료", "info")
-        time.sleep(1)
 
         # 평가 결과 상태 업데이트
         if node5_parsed_json:
+            print(f"node5_parsed_json: {node5_parsed_json}")
             state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
                 "is_complete", False
             )
+            print(f'state updated: {state["coverage_evaluation"]["is_complete"]}')
             state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
                 "missing_items", []
             )
+            print(f'state updated: {state["coverage_evaluation"]["missing_items"]}')
             is_complete = state["coverage_evaluation"]["is_complete"]
 
         # 커버리지가 완전하면 루프 종료
@@ -615,6 +629,7 @@ async def run_prompt_generation_agent_async(
 
         # 모든 응답을 수신
         async for part in node5_1_gen:
+            time.sleep(0.03)
             yield part
 
             # __NODE5_1_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
@@ -645,7 +660,6 @@ async def run_prompt_generation_agent_async(
             update_status(f"문제된 JSON 문자열: {node5_1_buffer[:200]}...", "debug")
 
         update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 완료", "info")
-        time.sleep(1)
 
         # 보완된 결과를 상태에 반영
         if node5_1_parsed_json:
@@ -675,6 +689,7 @@ async def run_prompt_generation_agent_async(
     node6_parsed_json = None
 
     async for part in node6_gen:
+        time.sleep(0.03)
         yield part
         if part.startswith("__FINAL_PARSE__"):
             raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -683,19 +698,9 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("6번 노드 완료", "info")
-    time.sleep(2)
 
     if node6_parsed_json:
         state["final_prompt"] = node6_parsed_json
-
-    # 마지막 결과 (예: "__RESULT_DATA__:{...}")
-    final_data = {
-        "final_prompt": {
-            "system_prompt": state["final_prompt"].get("system_prompt", ""),
-            "reasoning": state["final_prompt"].get("reasoning", ""),
-        }
-    }
-    yield f"__RESULT_DATA__:{json.dumps(final_data)}"
 
 
 def run_prompt_generation_agent_streaming(
