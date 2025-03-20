@@ -3,6 +3,8 @@
 import streamlit as st
 import time
 import io
+import os
+from stqdm import stqdm
 from database import (
     init_db,
     get_projects,
@@ -342,3 +344,88 @@ if st.session_state.get("task_state") == "delete_project":
     st.session_state.task_state = None
     time.sleep(0.5)
     st.rerun()
+
+st.divider()
+
+# RAG 섹션
+if st.button("RAG", use_container_width=True):
+    with st.container():
+        st.markdown(
+            '<div style="text-align: center; margin-bottom: 1rem;"><h2>RAG 학습</h2></div>',
+            unsafe_allow_html=True,
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown(
+                """
+                <div style="border: 1px solid #ddd; padding: 1rem; border-radius: 10px;">
+                    <h3 style="text-align: center;">URL로 학습</h3>
+                """,
+                unsafe_allow_html=True,
+            )
+            url_input = st.text_input("URL 입력", placeholder="https://example.com")
+            if st.button("URL로 RAG 학습", use_container_width=True):
+                if url_input:
+                    try:
+
+                        with st.spinner("RAG 학습 중..."):
+                            # 진행 상황 표시
+                            progress_text = st.empty()
+
+                            # 1단계: 문서 처리
+                            progress_text.text("문서 다운로드 및 처리 중...")
+                            documents = process_for_rag(url_input, content_type="url")
+
+                            if documents:
+                                st.success(
+                                    f"RAG 학습 완료! {len(documents)}개의 청크가 처리되었습니다."
+                                )
+                            else:
+                                st.error("문서 처리 중 오류가 발생했습니다.")
+                    except Exception as e:
+                        st.error(f"오류 발생: {str(e)}")
+                else:
+                    st.warning("URL을 입력해주세요.")
+
+        with col2:
+            st.markdown(
+                """
+                <div style="border: 1px solid #ddd; padding: 1rem; border-radius: 10px;">
+                    <h3 style="text-align: center;">파일로 학습</h3>
+                """,
+                unsafe_allow_html=True,
+            )
+            uploaded_file = st.file_uploader("텍스트 파일 업로드", type=["txt", "md"])
+            if st.button("파일로 RAG 학습", use_container_width=True):
+                if uploaded_file:
+                    try:
+                        from stqdm import stqdm
+
+                        with st.spinner("RAG 학습 중..."):
+                            # 임시 파일로 저장
+                            temp_path = f"temp_{uploaded_file.name}"
+                            with open(temp_path, "wb") as f:
+                                f.write(uploaded_file.getvalue())
+
+                            # 진행 상황 표시
+                            progress_text = st.empty()
+
+                            # 문서 처리
+                            progress_text.text("문서 처리 중...")
+                            documents = process_for_rag(temp_path, content_type="txt")
+
+                            # 임시 파일 삭제
+                            os.remove(temp_path)
+
+                            if documents:
+                                st.success(
+                                    f"RAG 학습 완료! {len(documents)}개의 청크가 처리되었습니다."
+                                )
+                            else:
+                                st.error("문서 처리 중 오류가 발생했습니다.")
+                    except Exception as e:
+                        st.error(f"오류 발생: {str(e)}")
+                else:
+                    st.warning("파일을 업로드해주세요.")
