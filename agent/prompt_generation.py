@@ -204,7 +204,7 @@ async def run_prompt_generation_agent_async(
         """
         1번 노드: 역할 / 지시사항 / 정보 구분
         """
-        system_msg = "[시스템] Node1: 역할, 지시사항, 정보로 구분"
+        system_msg = '##Role: "I am a versatile system designed to assist in providing structured and accurate responses."\n##Instructions: "Interpret the user\'s inputs, maintain clarity, and adhere to professional communication standards."\n##Information: "Focus on understanding and addressing the given instructions effectively, providing informative and precise outcomes."\n\nPlease provide input in the format provided above to ensure the intended task is clear.'
         user_msg = state["user_intention"]
         async for part in parse_chat_streaming_gen(
             system_msg, user_msg, RoleGuidanceOutput
@@ -215,7 +215,7 @@ async def run_prompt_generation_agent_async(
         """
         2번 노드: 출력 예시 생성
         """
-        system_msg = "[시스템] Node2: 출력 예시"
+        system_msg = "You are an assistant specialized in generating 'example outputs' for specified roles or functionalities. Analyze the user's provided role or functionality description, understand the specified intent and scope, and craft a well-structured and relevant example output adhering to the defined role or task."
         user_msg = state["user_intention"]
         async for part in parse_chat_streaming_gen(
             system_msg, user_msg, OutputExampleOutput
@@ -226,7 +226,7 @@ async def run_prompt_generation_agent_async(
         """
         3번 노드: 역할 요약
         """
-        system_msg = "[시스템] Node3: 역할 요약"
+        system_msg = "You refine, condense, and clarify user-provided definitions or instructions into concise and precise descriptions."
         user_msg = state["user_intention"]
         async for part in parse_chat_streaming_gen(
             system_msg, user_msg, RoleSummaryOutput
@@ -239,7 +239,7 @@ async def run_prompt_generation_agent_async(
         """
         rg = state["role_guidance"]
         oe = state["output_example"]
-        system_msg = "[시스템] Node4: 충돌 평가"
+        system_msg = "##role : Evaluator of system prompt coherence ##instructions : 1. Evaluate whether the specified roles, instructions, information, input examples, and output examples in the created system prompt have any contradictions, informational conflicts, or unclear directives. 2. Upon analyzing user-provided content categorized into roles, instructions, data, inputs, and outputs, assess for coherency, identifying any contradictions or inconsistencies among them. 3. Ensure a thorough evaluation process and resolve identified mismatches, ensuring overall harmony and accuracy in the provided content. ##information :  Focus on systematic evaluation of potential conflicts or unclear instructions between the components of a given system prompt, ensuring a coherent and seamless design for effective use. ##output_example :  Checking Alignment of Attributes\n\nTo ensure the entailed segments: ##role, ##instructions, ##information, ##input examples, and ##output examples are consistent and do not contradict one another, follow the procedure below:\n\n1. Analyze each segment to identify core requirements and intentions.\n2. Compare instructions against the provided role definition; ensure all tasks are feasible within the specified role.\n3. Validate information relevancy and harmony with the role's goals.\n4. Cross-reference examples (both input and output) with structured information and instructions for alignment.\n\nExample analysis:\n- Role: Data summarizer.\n- Instructions: Create concise summaries of provided text.\n- Information: Provides a maximum of 200-word summary.\n- Input Example: A 500-word news article.\n- Output Example: a 150-word summary.\n\nAfter evaluation, the segments all align, showing no contradiction. "
         user_msg = (
             f"(역할:{rg['role']}, 지시:{rg['instructions']}, "
             f"정보:{rg['information']}, 예시:{oe['output_example']})"
@@ -274,7 +274,7 @@ async def run_prompt_generation_agent_async(
         rg = state["role_guidance"]
         oe = state["output_example"]
         rs = state["role_summary"]
-        system_msg = "[시스템] Node5: 커버리지 평가"
+        system_msg = "##Role : You are an advanced data and functionality compliance review assistant. ##instructions : Given ##role, ##instructions, ##information, and the output example from processing data inputs, carefully review the criteria match of all parameters and ensure the generated result adheres entirely to the initial structure and specifications. Identify mismatches and correct them. ##information : The system should clarify the consistency between input-derived parameters and the generated outputs. Any inconsistency should be iteratively fixed until the output conforms satisfactorily to predefined standards. ##output_example : When validating against the specified roles and functionality, ensure all input data aligns with the outlined requirements and produce a compliance report summarizing the validation process."
         user_msg = (
             f"역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
             f"요약:{rs['summary']}, 예시:{oe['output_example']}"
@@ -309,7 +309,7 @@ async def run_prompt_generation_agent_async(
         """
         rg = state["role_guidance"]
         oe = state["output_example"]
-        system_msg = "[시스템] Node6: 최종 시스템 프롬프트"
+        system_msg = "당신은 시스템 프롬프트 작성 전문가입니다. 유저 프롬프트에 전달된 정보를 빠짐없이 system_prompt 에 마크다운 형태로 작성하세요."
         user_msg = (
             f"역할:{rg['role']}, 지시:{rg['instructions']}, "
             f"정보:{rg['information']}, 예시:{oe['output_example']}"

@@ -1178,5 +1178,5 @@ def generate_system_prompt_dialog():
     elif generate_btn:
         st.warning("역할/작동 방식을 입력해주세요.")
 
-    if st.button("close"):
+    if st.button("close", use_container_width=True):
         st.rerun()
