@@ -4,13 +4,14 @@ import os
 import json
 import asyncio
 import queue as queue_module
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 from openai import AzureOpenAI
+import pydantic
 from pydantic import BaseModel, Field
 
 #############
@@ -28,700 +29,615 @@ client = AzureOpenAI(
 )
 
 ################################
-# 2) Pydantic Models
+# 1) Pydantic Models
 ################################
 
 
-class RoleGuidanceOutput(BaseModel):
+class OpenAiResponseFormatGenerator(pydantic.json_schema.GenerateJsonSchema):
+    def generate(self, schema, mode="validation"):
+        json_schema = super().generate(schema, mode=mode)
+        json_schema = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": json_schema.pop("title"),
+                "schema": json_schema,
+            },
+        }
+        return json_schema
+
+
+class StrictBaseModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    @classmethod
+    def model_json_schema(cls, **kwargs):
+        return super().model_json_schema(
+            schema_generator=OpenAiResponseFormatGenerator, **kwargs
+        )
+
+
+class RoleGuidanceOutput(StrictBaseModel):
     role: str
     instructions: str
     information: str
 
 
-class OutputExampleOutput(BaseModel):
+class OutputExampleOutput(StrictBaseModel):
     output_example: str
 
 
-class RoleSummaryOutput(BaseModel):
+class RoleSummaryOutput(StrictBaseModel):
     summary: List[str]
 
 
-class ConflictEvaluationOutput(BaseModel):
+class ConflictEvaluationOutput(StrictBaseModel):
     has_conflicts: bool
     conflicts: Optional[List[str]] = None
     resolution: Optional[str] = None
 
 
-class ConflictResolutionOutput(BaseModel):
+class ConflictResolutionOutput(StrictBaseModel):
     role: str
     instructions: str
     information: str
     output_example: str
 
 
-class CoverageEvaluationOutput(BaseModel):
+class CoverageEvaluationOutput(StrictBaseModel):
     is_complete: bool
     missing_items: Optional[List[str]] = None
 
 
-class CoverageFixOutput(BaseModel):
+class CoverageFixOutput(StrictBaseModel):
     role: str
     instructions: str
     information: str
     output_example: str
 
 
-class FinalSystemPromptOutput(BaseModel):
+class FinalSystemPromptOutput(StrictBaseModel):
     system_prompt: str
     reasoning: str
 
 
-class InputExampleEvaluation(BaseModel):
-    has_example: bool
-    input_example: Optional[str] = None
+################################
+# 2) 노드 처리용 비동기 + 스트리밍 "Generator" 함수
+################################
 
 
-class IntentionSummaryOutput(BaseModel):
-    summary: List[str]
+async def parse_chat_streaming_gen(
+    system_content: str,
+    user_content: str,
+    pydantic_model,
+    max_retries: int = 3,
+) -> AsyncGenerator[str, None]:
+    """
+    실제 LLM 스트리밍을 async generator로 만들어,
+      1) 토큰을 partial로 yield
+      2) 전체가 끝나면 pydantic parse 시도 → 성공하면 최종 JSON을 __STEP_FINAL__ 형식으로 yield
+         (파싱 실패 시 raw 출력 or 에러 메시지)
 
+    호출 측에서는:
+        async for output in parse_chat_streaming_gen(...):
+            yield output
+    """
+    for attempt in range(max_retries):
+        try:
+            # Pydantic 모델로부터 JSON Schema 생성
+            schema = pydantic_model.model_json_schema()
 
-class UserPromptGenerationOutput(BaseModel):
-    instructions: str
-    information: str
-    output_example: str
+            # AzureOpenAI Chat Completions API 호출
+            response = client.chat.completions.create(
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,
+                messages=[
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": user_content},
+                ],
+                response_format=schema,
+                stream=True,
+            )
 
+            full_text = ""
+            # 1) partial 스트리밍
+            for chunk in response:
+                if not hasattr(chunk, "choices") or len(chunk.choices) == 0:
+                    continue
+                delta_obj = chunk.choices[0].delta
+                if hasattr(delta_obj, "content") and delta_obj.content is not None:
+                    token = delta_obj.content
+                    full_text += token
+                    yield token  # partial 토큰
 
-class UserPromptCoverageEvaluation(BaseModel):
-    is_complete: bool
-    missing_items: Optional[List[str]] = None
+            # 2) 최종 parse 시도
+            try:
+                parsed_json = json.loads(full_text)
+                # pydantic parse
+                parsed_result = pydantic_model.parse_obj(parsed_json)
+                # 성공하면 "__FINAL_PARSE__:{...}" 형식으로 내보냄
+                yield f"__FINAL_PARSE__:{json.dumps(parsed_json)}"
+                yield f"__PARSED_OBJECT__:{parsed_result}"
+            except Exception as e:
+                # parse 실패
+                yield f"__FINAL_PARSE_ERROR__:{str(e)}"
+            return
 
-
-class UserPromptFixOutput(BaseModel):
-    user_prompt: str
-
-
-class FinalUserPromptOutput(BaseModel):
-    user_prompt_template: str
-    reasoning: str
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # 재시도 전에 잠시 쉼
+                await asyncio.sleep(1)
+                continue
+            else:
+                yield f"__FINAL_PARSE_ERROR__:{str(e)}"
+                return
 
 
 ################################
-# 3) 비동기 함수
+# 3) 시스템 프롬프트 생성 메인 로직
 ################################
 
 
 async def run_prompt_generation_agent_async(
     user_intention: str,
-    user_sys_params: Optional[str] = None,
     status_callback: Optional[callable] = None,
-) -> Dict[str, Any]:
+) -> AsyncGenerator[str, None]:
     """
-    구조화된 Outputs를 각 단계에서 parse(...)로 받아서 state를 채운다.
-    status_callback: 상태 업데이트를 위한 콜백 함수 (선택적)
+    시스템 프롬프트 생성 프로세스:
+      1. (병렬) Node1(역할/지시사항/정보 구분), Node2(출력 예시), Node3(역할 요약) → 결과가 모두 끝나면
+         *1,2,3 결과 종합 정제*
+      2. (순차) Node4(충돌 평가) → (필요 시 Node4.1 충돌 해결) → Pass될 때까지
+      3. (순차) Node5(커버리지 평가) → (필요 시 Node5.1 보완) → Pass될 때까지
+      4. (순차) Node6(최종 시스템 프롬프트 출력)
+
+    각 노드 함수는 parse_chat_streaming_gen(...)을 호출해 partial 토큰을 yield 하고,
+    parse 완료 시점에 "__FINAL_PARSE__:{...}"가 나옴. 이를 상위에서 잡아 state에 반영.
     """
 
-    print("DEBUG: Enter run_prompt_generation_agent_async()")
-    if user_sys_params not in ["user", "system"]:
-        user_sys_params = "system"
-
-    # 상태 업데이트 함수
-    def update_status(message, state="running"):
+    def update_status(msg: str, state="running"):
         if status_callback:
-            status_callback(message, state)
-        print(f"STATUS: {message} ({state})")
+            status_callback(msg, state)
+        print(f"[STATUS] {msg} ({state})")
 
-    state = {
-        "user_intention": user_intention,
-        "prompt_type": user_sys_params,
-        # ...
-        "role_guidance": None,
-        "output_example": None,
-        "role_summary": None,
-        "conflict_evaluation": None,
-        "coverage_evaluation": None,
-        "final_prompt": None,
-        "input_example_evaluation": None,
-        "intention_summary": None,
-        "user_prompt_generation": None,
-        "user_prompt_coverage": None,
-    }
+    ################################
+    # 노드 함수들 (각각 parse_chat_streaming_gen 호출)
+    ################################
 
-    MAX_RETRY = 20
-
-    async def parse_chat(system_content: str, user_content: str, pydantic_model):
+    async def node_system_1_role_guidance(state: dict):
         """
-        구조화된 응답을 pydantic_model로 파싱
+        1번 노드: 역할 / 지시사항 / 정보 구분
         """
-        print(f"DEBUG: 파싱 시작 - {pydantic_model.__name__}")
-        response = client.beta.chat.completions.parse(
-            model=AZURE_OPENAI_DEPLOYMENT_NAME,  # 실제 배포 이름
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_content},
-            ],
-            response_format=pydantic_model,
+        system_msg = "[시스템] Node1: 역할, 지시사항, 정보로 구분"
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, RoleGuidanceOutput
+        ):
+            yield f"__NODE1_PARTIAL__:{part}"
+
+    async def node_system_2_output_example(state: dict):
+        """
+        2번 노드: 출력 예시 생성
+        """
+        system_msg = "[시스템] Node2: 출력 예시"
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, OutputExampleOutput
+        ):
+            yield f"__NODE2_PARTIAL__:{part}"
+
+    async def node_system_3_role_summary(state: dict):
+        """
+        3번 노드: 역할 요약
+        """
+        system_msg = "[시스템] Node3: 역할 요약"
+        user_msg = state["user_intention"]
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, RoleSummaryOutput
+        ):
+            yield f"__NODE3_PARTIAL__:{part}"
+
+    async def node_system_4_conflict_evaluation(state: dict):
+        """
+        4번 노드: 충돌 평가
+        """
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        system_msg = "[시스템] Node4: 충돌 평가"
+        user_msg = (
+            f"(역할:{rg['role']}, 지시:{rg['instructions']}, "
+            f"정보:{rg['information']}, 예시:{oe['output_example']})"
         )
-        print(f"DEBUG: 파싱 완료 - {pydantic_model.__name__}")
-        return response.choices[0].message.parsed
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, ConflictEvaluationOutput
+        ):
+            yield f"__NODE4_PARTIAL__:{part}"
 
-    ####### 시스템 프롬프트 노드들 #######
-    async def node_system_1_role_guidance(state):
-        print("DEBUG: 시작 - node_system_1_role_guidance")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 역할/작동방식을 ##역할, ##지시 사항, ##정보로 나누어 JSON으로 출력하세요."
-        user_msg = state["user_intention"]
-        try:
-            parsed = await parse_chat(system_msg, user_msg, RoleGuidanceOutput)
-            state["role_guidance"] = {
-                "role": parsed.role,
-                "instructions": parsed.instructions,
-                "information": parsed.information,
-            }
-        except Exception as e:
-            print("[ERROR] node_system_1_role_guidance:", e)
-            state["role_guidance"] = {
-                "role": f"(오류){e}",
-                "instructions": f"(오류){e}",
-                "information": f"(오류){e}",
-            }
-        print("DEBUG: 종료 - node_system_1_role_guidance")
-        return state
-
-    async def node_system_2_output_example(state):
-        print("DEBUG: 시작 - node_system_2_output_example")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 역할/작동방식으로부터 출력 예시를 JSON으로 생성하세요."
-        user_msg = state["user_intention"]
-        try:
-            parsed = await parse_chat(system_msg, user_msg, OutputExampleOutput)
-            state["output_example"] = {"output_example": parsed.output_example}
-        except Exception as e:
-            print("[ERROR] node_system_2_output_example:", e)
-            state["output_example"] = {"output_example": f"(오류){e}"}
-        print("DEBUG: 종료 - node_system_2_output_example")
-        return state
-
-    async def node_system_3_role_summary(state):
-        print("DEBUG: 시작 - node_system_3_role_summary")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 역할/작동방식을 개괄식으로 빠짐없이 나열해 JSON 배열로 정제하세요."
-        user_msg = state["user_intention"]
-        try:
-            parsed = await parse_chat(system_msg, user_msg, RoleSummaryOutput)
-            state["role_summary"] = {"summary": parsed.summary}
-        except Exception as e:
-            print("[ERROR] node_system_3_role_summary:", e)
-            state["role_summary"] = {"summary": [f"(오류){e}"]}
-        print("DEBUG: 종료 - node_system_3_role_summary")
-        return state
-
-    async def node_system_4_conflict_evaluation(state):
-        print("DEBUG: 시작 - node_system_4_conflict_evaluation")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 각 항목이 서로 모순되거나 충돌하는 지시, 정보가 없는지 평가하세요."
-        rg = state["role_guidance"]
-        oe = state["output_example"]
-        user_msg = f"""##역할: {rg['role']}
-##지시 사항: {rg['instructions']}
-##정보: {rg['information']}
-##출력 예시: {oe['output_example']}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, ConflictEvaluationOutput)
-            state["conflict_evaluation"] = {
-                "has_conflicts": parsed.has_conflicts,
-                "conflicts": parsed.conflicts,
-                "resolution": parsed.resolution,
-            }
-            print(f"DEBUG: 충돌 평가 결과 - has_conflicts: {parsed.has_conflicts}")
-        except Exception as e:
-            print("[ERROR] node_system_4_conflict_evaluation:", e)
-            state["conflict_evaluation"] = {
-                "has_conflicts": False,
-                "conflicts": None,
-                "resolution": None,
-            }
-        print("DEBUG: 종료 - node_system_4_conflict_evaluation")
-        return state
-
-    async def node_system_4_1_conflict_resolution(state):
-        print("DEBUG: 시작 - node_system_4_1_conflict_resolution")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 충돌을 해결하는 새로운 항목들을 생성하세요."
-        rg = state["role_guidance"]
-        oe = state["output_example"]
+    async def node_system_4_1_conflict_resolution(state: dict):
+        """
+        4.1번 노드: 충돌 해결
+        """
         ce = state["conflict_evaluation"]
-        user_msg = f"""##역할: {rg['role']}
-##지시 사항: {rg['instructions']}
-##정보: {rg['information']}
-##출력 예시: {oe['output_example']}
+        rg = state["role_guidance"]
+        oe = state["output_example"]
+        system_msg = "[시스템] Node4.1: 충돌 해결"
+        user_msg = (
+            f"충돌:{ce['conflicts']}, 해결안:{ce['resolution']}, "
+            f"현재 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
+            f"출력 예시:{oe['output_example']}"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, ConflictResolutionOutput
+        ):
+            yield f"__NODE4_1_PARTIAL__:{part}"
 
-발견된 충돌: {ce['conflicts']}
-해결안: {ce['resolution']}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, ConflictResolutionOutput)
-            state["role_guidance"] = {
-                "role": parsed.role,
-                "instructions": parsed.instructions,
-                "information": parsed.information,
-            }
-            state["output_example"] = {"output_example": parsed.output_example}
-        except Exception as e:
-            print("[ERROR] node_system_4_1_conflict_resolution:", e)
-        print("DEBUG: 종료 - node_system_4_1_conflict_resolution")
-        return state
-
-    async def node_system_5_coverage_evaluation(state):
-        print("DEBUG: 시작 - node_system_5_coverage_evaluation")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 개괄식으로 정제한 역할/작동방식의 모든 항목을 만족하는지 평가하세요."
+    async def node_system_5_coverage_evaluation(state: dict):
+        """
+        5번 노드: 커버리지 평가
+        """
         rg = state["role_guidance"]
         oe = state["output_example"]
         rs = state["role_summary"]
-        user_msg = f"""##역할: {rg['role']}
-##지시 사항: {rg['instructions']}
-##정보: {rg['information']}
-##출력 예시: {oe['output_example']}
+        system_msg = "[시스템] Node5: 커버리지 평가"
+        user_msg = (
+            f"역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
+            f"요약:{rs['summary']}, 예시:{oe['output_example']}"
+        )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, CoverageEvaluationOutput
+        ):
+            yield f"__NODE5_PARTIAL__:{part}"
 
-요구사항 목록: {rs['summary']}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, CoverageEvaluationOutput)
-            state["coverage_evaluation"] = {
-                "is_complete": parsed.is_complete,
-                "missing_items": parsed.missing_items,
-            }
-            print(f"DEBUG: 커버리지 평가 결과 - is_complete: {parsed.is_complete}")
-        except Exception as e:
-            print("[ERROR] node_system_5_coverage_evaluation:", e)
-            state["coverage_evaluation"] = {"is_complete": True, "missing_items": None}
-        print("DEBUG: 종료 - node_system_5_coverage_evaluation")
-        return state
-
-    async def node_system_5_1_coverage_fix(state):
-        print("DEBUG: 시작 - node_system_5_1_coverage_fix")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 만족하지 못한 항목을 수정하세요."
+    async def node_system_5_1_coverage_fix(state: dict):
+        """
+        5.1번 노드: 커버리지 보완
+        """
         rg = state["role_guidance"]
         oe = state["output_example"]
         ce = state["coverage_evaluation"]
         rs = state["role_summary"]
-        user_msg = f"""##역할: {rg['role']}
-##지시 사항: {rg['instructions']}
-##정보: {rg['information']}
-##출력 예시: {oe['output_example']}
-
-누락된 항목: {ce['missing_items']}
-요구사항 목록: {rs['summary']}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, CoverageFixOutput)
-            state["role_guidance"] = {
-                "role": parsed.role,
-                "instructions": parsed.instructions,
-                "information": parsed.information,
-            }
-            state["output_example"] = {"output_example": parsed.output_example}
-        except Exception as e:
-            print("[ERROR] node_system_5_1_coverage_fix:", e)
-        print("DEBUG: 종료 - node_system_5_1_coverage_fix")
-        return state
-
-    async def node_system_final(state):
-        print("DEBUG: 시작 - node_system_final")
-        system_msg = (
-            "당신은 AI 프롬프트 전문가입니다. 최종 시스템 프롬프트를 생성하세요."
+        system_msg = "[시스템] Node5.1: 보완"
+        user_msg = (
+            f"누락:{ce['missing_items']}, 요약:{rs['summary']}, "
+            f"현재 역할:{rg['role']}, 지시:{rg['instructions']}, 정보:{rg['information']}, "
+            f"출력 예시:{oe['output_example']}"
         )
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, CoverageFixOutput
+        ):
+            yield f"__NODE5_1_PARTIAL__:{part}"
+
+    async def node_system_6_final(state: dict):
+        """
+        6번 노드: 최종 시스템 프롬프트 생성
+        """
         rg = state["role_guidance"]
         oe = state["output_example"]
-        user_msg = f"""##역할: {rg['role']}
-##지시 사항: {rg['instructions']}
-##정보: {rg['information']}
-##출력 예시: {oe['output_example']}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, FinalSystemPromptOutput)
-            state["final_prompt"] = {
-                "system_prompt": parsed.system_prompt,
-                "user_prompt_template": "{{사용자 입력}}",
-                "reasoning": parsed.reasoning,
-            }
-        except Exception as e:
-            print("[ERROR] node_system_final:", e)
-            state["final_prompt"] = {
-                "system_prompt": "(오류)시스템프롬프트",
-                "user_prompt_template": "{{사용자 입력}}",
-                "reasoning": str(e),
-            }
-        print("DEBUG: 종료 - node_system_final")
-        return state
-
-    ####### 유저 프롬프트 노드들 #######
-    async def node_user_1_input_example_check(state):
-        print("DEBUG: 시작 - node_user_1_input_example_check")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 의도/목적에 입력 예시가 있는지 확인하세요."
-        user_msg = state["user_intention"]
-        try:
-            parsed = await parse_chat(system_msg, user_msg, InputExampleEvaluation)
-            state["input_example_evaluation"] = {
-                "has_example": parsed.has_example,
-                "input_example": parsed.input_example,
-            }
-            print(f"DEBUG: 입력 예시 확인 결과 - has_example: {parsed.has_example}")
-        except Exception as e:
-            print("[ERROR] node_user_1_input_example_check:", e)
-            state["input_example_evaluation"] = {
-                "has_example": False,
-                "input_example": None,
-            }
-        print("DEBUG: 종료 - node_user_1_input_example_check")
-        return state
-
-    async def node_user_2_intention_summary(state):
-        print("DEBUG: 시작 - node_user_2_intention_summary")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 의도/목적을 개괄식으로 빠짐없이 나열해 정제하세요."
-        user_msg = state["user_intention"]
-        try:
-            parsed = await parse_chat(system_msg, user_msg, IntentionSummaryOutput)
-            state["intention_summary"] = {"summary": parsed.summary}
-        except Exception as e:
-            print("[ERROR] node_user_2_intention_summary:", e)
-            state["intention_summary"] = {"summary": [f"(오류){e}"]}
-        print("DEBUG: 종료 - node_user_2_intention_summary")
-        return state
-
-    async def node_user_3_prompt_generation(state):
-        print("DEBUG: 시작 - node_user_3_prompt_generation")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 의도/목적으로부터 지시사항, 정보, 출력 예시를 생성하세요."
-        ie = state["input_example_evaluation"]
-        user_msg = f"""의도/목적: {state["user_intention"]}
-입력 예시 포함 여부: {ie["has_example"]}
-입력 예시: {ie["input_example"]}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, UserPromptGenerationOutput)
-            # 프롬프트 조합
-            if ie["has_example"] and ie["input_example"]:
-                user_prompt = (
-                    f"{parsed.instructions}\n\n"
-                    f"{parsed.information}\n\n"
-                    f"입력 예시: {ie['input_example']}\n\n"
-                    f"출력 예시: {parsed.output_example}"
-                )
-            else:
-                user_prompt = (
-                    f"{parsed.instructions}\n\n"
-                    f"{parsed.information}\n\n"
-                    f"출력 예시: {parsed.output_example}"
-                )
-            state["user_prompt_generation"] = {
-                "user_prompt": user_prompt,
-                "instructions": parsed.instructions,
-                "information": parsed.information,
-                "output_example": parsed.output_example,
-            }
-        except Exception as e:
-            print("[ERROR] node_user_3_prompt_generation:", e)
-            state["user_prompt_generation"] = {
-                "user_prompt": f"(오류){e}",
-                "instructions": f"(오류){e}",
-                "information": f"(오류){e}",
-                "output_example": f"(오류){e}",
-            }
-        print("DEBUG: 종료 - node_user_3_prompt_generation")
-        return state
-
-    async def node_user_4_coverage_evaluation(state):
-        print("DEBUG: 시작 - node_user_4_coverage_evaluation")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 프롬프트가 의도/목적의 모든 항목을 만족하는지 평가하세요."
-        up = state["user_prompt_generation"]["user_prompt"]
-        it = state["intention_summary"]
-        ie = state["input_example_evaluation"]
-        user_msg = f"""생성된 프롬프트:
-{up}
-
-입력 예시 포함 여부: {ie["has_example"]}
-입력 예시: {ie["input_example"]}
-
-의도/목적 요약: {it["summary"]}"""
-        try:
-            parsed = await parse_chat(
-                system_msg, user_msg, UserPromptCoverageEvaluation
-            )
-            state["user_prompt_coverage"] = {
-                "is_complete": parsed.is_complete,
-                "missing_items": parsed.missing_items,
-            }
-            print(
-                f"DEBUG: 유저 프롬프트 커버리지 평가 결과 - is_complete: {parsed.is_complete}"
-            )
-        except Exception as e:
-            print("[ERROR] node_user_4_coverage_evaluation:", e)
-            state["user_prompt_coverage"] = {"is_complete": True, "missing_items": None}
-        print("DEBUG: 종료 - node_user_4_coverage_evaluation")
-        return state
-
-    async def node_user_4_1_coverage_fix(state):
-        print("DEBUG: 시작 - node_user_4_1_coverage_fix")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 만족하지 못한 항목을 수정하세요."
-        up = state["user_prompt_generation"]["user_prompt"]
-        uc = state["user_prompt_coverage"]
-        it = state["intention_summary"]
-        user_msg = f"""현재 프롬프트:
-{up}
-
-누락된 항목: {uc["missing_items"]}
-의도/목적 요약: {it["summary"]}"""
-        try:
-            parsed = await parse_chat(system_msg, user_msg, UserPromptFixOutput)
-            state["user_prompt_generation"]["user_prompt"] = parsed.user_prompt
-        except Exception as e:
-            print("[ERROR] node_user_4_1_coverage_fix:", e)
-        print("DEBUG: 종료 - node_user_4_1_coverage_fix")
-        return state
-
-    async def node_user_final(state):
-        print("DEBUG: 시작 - node_user_final")
-        system_msg = "당신은 AI 프롬프트 전문가입니다. 최종 유저 프롬프트를 생성하세요."
-        up = state["user_prompt_generation"]["user_prompt"]
-        try:
-            parsed = await parse_chat(system_msg, up, FinalUserPromptOutput)
-            state["final_prompt"] = {
-                "system_prompt": "당신은 유용한 AI 어시스턴트입니다.",
-                "user_prompt_template": parsed.user_prompt_template,
-                "reasoning": parsed.reasoning,
-            }
-        except Exception as e:
-            print("[ERROR] node_user_final:", e)
-            state["final_prompt"] = {
-                "system_prompt": "당신은 유용한 AI 어시스턴트입니다.",
-                "user_prompt_template": f"(오류){e}",
-                "reasoning": f"(오류){e}",
-            }
-        print("DEBUG: 종료 - node_user_final")
-        return state
-
-    ################################
-    # 시스템 프롬프트 생성 흐름
-    ################################
-    async def system_prompt_workflow(state):
-        print("DEBUG: 시스템 프롬프트 생성 워크플로우 시작")
-        update_status("시스템 프롬프트 생성 워크플로우 시작")
-
-        # 1, 2, 3번 노드 병렬 처리
-        print("DEBUG: 병렬 실행 - 노드 1, 2, 3")
-        update_status("역할/작동방식 분석 중 (1/5)")
-        node1_task = asyncio.create_task(node_system_1_role_guidance(state.copy()))
-        node2_task = asyncio.create_task(node_system_2_output_example(state.copy()))
-        node3_task = asyncio.create_task(node_system_3_role_summary(state.copy()))
-
-        # 병렬 작업 완료 대기
-        node1_result, node2_result, node3_result = await asyncio.gather(
-            node1_task, node2_task, node3_task
+        system_msg = "[시스템] Node6: 최종 시스템 프롬프트"
+        user_msg = (
+            f"역할:{rg['role']}, 지시:{rg['instructions']}, "
+            f"정보:{rg['information']}, 예시:{oe['output_example']}"
         )
-        print("DEBUG: 병렬 실행 완료 - 노드 1, 2, 3")
-
-        # 결과 병합
-        state["role_guidance"] = node1_result["role_guidance"]
-        state["output_example"] = node2_result["output_example"]
-        state["role_summary"] = node3_result["role_summary"]
-
-        # 4번 노드 - 충돌 평가 및 해결
-        update_status("항목 간 충돌 검토 중 (2/5)")
-        state = await node_system_4_conflict_evaluation(state)
-        retry_count = 0
-        while state["conflict_evaluation"].get("has_conflicts", False):
-            print(f"DEBUG: 충돌 발견, 재시도 {retry_count+1}/{MAX_RETRY}")
-            update_status(f"충돌 해결 중 (재시도 {retry_count+1}/{MAX_RETRY})")
-            if retry_count >= MAX_RETRY:
-                print("DEBUG: 최대 재시도 횟수 초과, 충돌 해결 중단")
-                break
-            state = await node_system_4_1_conflict_resolution(state)
-            state = await node_system_4_conflict_evaluation(state)
-            retry_count += 1
-
-        # 5번 노드 - 커버리지 평가 및 수정
-        update_status("요구사항 충족도 검토 중 (3/5)")
-        state = await node_system_5_coverage_evaluation(state)
-        retry_count = 0
-        while not state["coverage_evaluation"].get("is_complete", True):
-            print(f"DEBUG: 커버리지 부족, 재시도 {retry_count+1}/{MAX_RETRY}")
-            update_status(f"누락된 항목 보완 중 (재시도 {retry_count+1}/{MAX_RETRY})")
-            if retry_count >= MAX_RETRY:
-                print("DEBUG: 최대 재시도 횟수 초과, 커버리지 수정 중단")
-                break
-            state = await node_system_5_1_coverage_fix(state)
-            state = await node_system_5_coverage_evaluation(state)
-            retry_count += 1
-
-        # 최종 시스템 프롬프트 생성
-        update_status("최종 시스템 프롬프트 생성 중 (4/5)")
-        state = await node_system_final(state)
-        update_status("시스템 프롬프트 생성 완료 (5/5)", "complete")
-        print("DEBUG: 시스템 프롬프트 생성 워크플로우 완료")
-        return state
+        async for part in parse_chat_streaming_gen(
+            system_msg, user_msg, FinalSystemPromptOutput
+        ):
+            yield f"__NODE6_PARTIAL__:{part}"
 
     ################################
-    # 유저 프롬프트 생성 흐름
+    # 상태 저장용 dict
     ################################
-    async def user_prompt_workflow(state):
-        print("DEBUG: 유저 프롬프트 생성 워크플로우 시작")
-        update_status("유저 프롬프트 생성 워크플로우 시작")
+    state = {
+        "user_intention": user_intention,  # 유저 입력
+        "role_guidance": {
+            "role": "",
+            "instructions": "",
+            "information": "",
+        },  # 1번 노드 결과
+        "output_example": {"output_example": ""},  # 2번 노드 결과
+        "role_summary": {"summary": []},  # 3번 노드 결과
+        "conflict_evaluation": {
+            "has_conflicts": False,
+            "conflicts": [],
+            "resolution": "",
+        },  # 4번 노드 결과
+        "coverage_evaluation": {
+            "is_complete": False,
+            "missing_items": [],
+        },  # 5번 노드 결과
+        "final_prompt": {},  # 6번 노드 결과
+    }
 
-        # 1, 2번 노드 병렬 처리
-        print("DEBUG: 병렬 실행 - 노드 1, 2")
-        update_status("의도/목적 분석 중 (1/4)")
-        node1_task = asyncio.create_task(node_user_1_input_example_check(state.copy()))
-        node2_task = asyncio.create_task(node_user_2_intention_summary(state.copy()))
-
-        # 병렬 작업 완료 대기
-        node1_result, node2_result = await asyncio.gather(node1_task, node2_task)
-        print("DEBUG: 병렬 실행 완료 - 노드 1, 2")
-
-        # 결과 병합
-        state["input_example_evaluation"] = node1_result["input_example_evaluation"]
-        state["intention_summary"] = node2_result["intention_summary"]
-
-        # 프롬프트 생성
-        update_status("프롬프트 초안 생성 중 (2/4)")
-        state = await node_user_3_prompt_generation(state)
-
-        # 4번 노드 - 커버리지 평가 및 수정
-        update_status("요구사항 충족도 검토 중 (3/4)")
-        state = await node_user_4_coverage_evaluation(state)
-        retry_count = 0
-        while not state["user_prompt_coverage"].get("is_complete", True):
-            print(
-                f"DEBUG: 유저 프롬프트 커버리지 부족, 재시도 {retry_count+1}/{MAX_RETRY}"
-            )
-            update_status(f"누락된 항목 보완 중 (재시도 {retry_count+1}/{MAX_RETRY})")
-            if retry_count >= MAX_RETRY:
-                print("DEBUG: 최대 재시도 횟수 초과, 유저 프롬프트 커버리지 수정 중단")
-                break
-            state = await node_user_4_1_coverage_fix(state)
-            state = await node_user_4_coverage_evaluation(state)
-            retry_count += 1
-
-        # 최종 유저 프롬프트 생성
-        update_status("최종 유저 프롬프트 생성 중 (4/4)")
-        state = await node_user_final(state)
-        update_status("유저 프롬프트 생성 완료", "complete")
-        print("DEBUG: 유저 프롬프트 생성 워크플로우 완료")
-        return state
+    update_status("시스템 프롬프트 생성을 시작합니다.", "info")
 
     ################################
-    # 메인 워크플로우 실행
+    # 1) 1,2,3 번 노드를 병렬 수행 (round-robin 방식)
     ################################
-    if user_sys_params == "system":
-        state = await system_prompt_workflow(state)
-    else:
-        state = await user_prompt_workflow(state)
+    update_status("1,2,3번 노드 (병렬) 시작", "info")
 
-    print("DEBUG: Exit run_prompt_generation_agent_async()")
-    return state
+    node1_gen = node_system_1_role_guidance(state.copy())
+    node2_gen = node_system_2_output_example(state.copy())
+    node3_gen = node_system_3_role_summary(state.copy())
 
+    done1 = False
+    done2 = False
+    done3 = False
 
-################################
-# 4) 동기 래퍼
-################################
-def run_prompt_generation_agent(
-    user_intention: str,
-    user_sys_params: Optional[str] = None,
-    status_callback: Optional[callable] = None,
-) -> Dict[str, Any]:
-    print("DEBUG: Enter run_prompt_generation_agent (SYNC WRAPPER)")
-    result = asyncio.run(
-        run_prompt_generation_agent_async(
-            user_intention, user_sys_params, status_callback
+    node1_parsed_json = None
+    node2_parsed_json = None
+    node3_parsed_json = None
+
+    node1_buffer = ""
+    node2_buffer = ""
+    node3_buffer = ""
+
+    while not (done1 and done2 and done3):
+        # node1
+        if not done1:
+            try:
+                part = await node1_gen.asend(None)
+                yield part  # (1) partial 토큰을 그대로 외부에 내보냄
+                node1_buffer += part  # (2) 노드1 버퍼에 계속 누적
+
+                # 이제 누적된 문자열에서 "__FINAL_PARSE__"가 있는지 확인
+                if "__FINAL_PARSE__" in node1_buffer:
+                    # "__FINAL_PARSE__:{...}" 부분을 잘라내서 JSON으로 파싱
+                    final_parse_index = node1_buffer.find("__FINAL_PARSE__")
+                    json_str = node1_buffer[final_parse_index:].replace(
+                        "__FINAL_PARSE__:", ""
+                    )
+                    node1_parsed_json = json.loads(json_str)
+                    print("node1 완료")
+                    print(part)
+                    print(node1_parsed_json)
+                    print(state)
+                    done1 = True
+
+                elif "__FINAL_PARSE_ERROR__" in node1_buffer:
+                    print("node1 ERROR")
+                    print(part)
+                    print(node1_parsed_json)
+                    print(state)
+                    done1 = True
+
+            except StopAsyncIteration:
+                print("node1 StopAsyncIteration")
+                print(part)
+                print(node1_parsed_json)
+                print(state)
+                done1 = True
+
+        # node2
+        if not done2:
+            try:
+                part = await node2_gen.asend(None)
+                yield part
+                node2_buffer += part
+
+                if "__FINAL_PARSE__" in node2_buffer:
+                    final_parse_index = node2_buffer.find("__FINAL_PARSE__")
+                    json_str = node2_buffer[final_parse_index:].replace(
+                        "__FINAL_PARSE__:", ""
+                    )
+                    node2_parsed_json = json.loads(json_str)
+                    print("node2 완료")
+                    print(part)
+                    print(node2_parsed_json)
+                    print(state)
+                    done2 = True
+
+                elif "__FINAL_PARSE_ERROR__" in node2_buffer:
+                    print("node2 ERROR")
+                    print(part)
+                    print(node2_parsed_json)
+                    print(state)
+                    done2 = True
+
+            except StopAsyncIteration:
+                print("node2 StopAsyncIteration")
+                print(part)
+                print(node2_parsed_json)
+                print(state)
+                done2 = True
+
+        # node3
+        if not done3:
+            try:
+                part = await node3_gen.asend(None)
+                yield part
+                node3_buffer += part
+
+                if "__FINAL_PARSE__" in node3_buffer:
+                    final_parse_index = node3_buffer.find("__FINAL_PARSE__")
+                    json_str = node3_buffer[final_parse_index:].replace(
+                        "__FINAL_PARSE__:", ""
+                    )
+                    node3_parsed_json = json.loads(json_str)
+                    print("node3 완료")
+                    print(part)
+                    print(node3_parsed_json)
+                    print(state)
+                    done3 = True
+
+                elif "__FINAL_PARSE_ERROR__" in node3_buffer:
+                    print("node3 ERROR")
+                    print(part)
+                    print(node3_parsed_json)
+                    print(state)
+                    done3 = True
+
+            except StopAsyncIteration:
+                print("node3 StopAsyncIteration")
+                print(part)
+                print(node3_parsed_json)
+                print(state)
+                done3 = True
+
+    update_status("1,2,3번 노드 (병렬) 완료", "info")
+    print(state)
+
+    # 결과 state 반영
+    if node1_parsed_json:
+        state["role_guidance"]["role"] = node1_parsed_json.get("role", "")
+        state["role_guidance"]["instructions"] = node1_parsed_json.get(
+            "instructions", ""
         )
-    )
-    print("DEBUG: Exit run_prompt_generation_agent (SYNC WRAPPER)")
-    return result
+        state["role_guidance"]["information"] = node1_parsed_json.get("information", "")
 
-
-################################
-# 5) 스트리밍 함수
-################################
-def _run_agent_and_yield(
-    user_intention: str, prompt_type: str, status_callback: Optional[callable] = None
-):
-    """단계별 결과를 yield"""
-    yield f"'{prompt_type}' 프롬프트 생성을 위한 분석을 시작합니다...\n"
-    try:
-        result = run_prompt_generation_agent(
-            user_intention, prompt_type, status_callback
+    if node2_parsed_json:
+        state["output_example"]["output_example"] = node2_parsed_json.get(
+            "output_example", ""
         )
-        final_prompt = result.get("final_prompt", {})
-        if prompt_type == "system":
-            sp = final_prompt.get("system_prompt", "")
-            yield f"## 최종 시스템 프롬프트\n\n```\n{sp}\n```\n\n"
-            yield f"### 추천 사용자 프롬프트 템플릿\n```\n{final_prompt.get('user_prompt_template','')}\n```\n\n"
-        else:
-            up = final_prompt.get("user_prompt_template", "")
-            yield f"## 최종 사용자 프롬프트\n\n```\n{up}\n```\n\n"
-            yield f"### 추천 시스템 프롬프트\n```\n{final_prompt.get('system_prompt','')}\n```\n\n"
 
-        yield f"### 설계 근거\n\n{final_prompt.get('reasoning','')}\n\n"
-        data = {
-            "prompt_type": prompt_type,
-            "prompt": sp if prompt_type == "system" else up,
-            "reasoning": final_prompt.get("reasoning", ""),
+    if node3_parsed_json:
+        state["role_summary"]["summary"] = node3_parsed_json.get("summary", [])
+
+    ################################
+    # 2) 노드4 (충돌 평가)
+    ################################
+    update_status("4번 노드 (충돌 평가) 시작", "info")
+    node4_gen = node_system_4_conflict_evaluation(state)
+    node4_parsed_json = None
+
+    async for part in node4_gen:
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node4_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("4번 노드 완료", "info")
+
+    if node4_parsed_json:
+        state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
+            "has_conflicts", False
+        )
+        state["conflict_evaluation"]["conflicts"] = node4_parsed_json.get(
+            "conflicts", []
+        )
+        state["conflict_evaluation"]["resolution"] = node4_parsed_json.get(
+            "resolution", ""
+        )
+
+    # 만약 충돌이 있다면 해결 노드 4.1 -> 다시 4번 노드를 반복 등 로직이 가능하나,
+    # 여기서는 단순 예시로 1회만 시연하고 pass 처리 생략
+
+    ################################
+    # 3) 노드5 (커버리지 평가)
+    ################################
+    update_status("5번 노드 (커버리지 평가) 시작", "info")
+    node5_gen = node_system_5_coverage_evaluation(state)
+    node5_parsed_json = None
+
+    async for part in node5_gen:
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node5_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("5번 노드 완료", "info")
+
+    if node5_parsed_json:
+        state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
+            "is_complete", False
+        )
+        state["coverage_evaluation"]["missing_items"] = node5_parsed_json.get(
+            "missing_items", []
+        )
+
+    # 만약 누락된 사항 있다면 5.1 → 재평가 등 로직
+
+    update_status("5.1 (커버리지 보완)", "info")
+    node5_1_gen = node_system_5_1_coverage_fix(state)
+    node5_1_parsed_json = None
+
+    async for part in node5_1_gen:
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node5_1_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("5.1번 노드 완료", "info")
+
+    if node5_1_parsed_json:
+        # 보완된 결과를 state에 반영(필요시)
+        state["role_guidance"]["role"] = node5_1_parsed_json.get("role", "")
+        state["role_guidance"]["instructions"] = node5_1_parsed_json.get(
+            "instructions", ""
+        )
+        state["role_guidance"]["information"] = node5_1_parsed_json.get(
+            "information", ""
+        )
+        state["output_example"]["output_example"] = node5_1_parsed_json.get(
+            "output_example", ""
+        )
+
+    ################################
+    # 4) 노드6 (최종)
+    ################################
+    update_status("6번 노드 (최종) 시작", "info")
+    node6_gen = node_system_6_final(state)
+    node6_parsed_json = None
+
+    async for part in node6_gen:
+        yield part
+        if part.startswith("__FINAL_PARSE__"):
+            raw_json = part.replace("__FINAL_PARSE__:", "")
+            node6_parsed_json = json.loads(raw_json)
+        elif part.startswith("__PARSED_OBJECT__"):
+            pass
+
+    update_status("6번 노드 완료", "info")
+
+    if node6_parsed_json:
+        state["final_prompt"] = node6_parsed_json
+
+    # 마지막 결과 (예: "__RESULT_DATA__:{...}")
+    final_data = {
+        "final_prompt": {
+            "system_prompt": state["final_prompt"].get("system_prompt", ""),
+            "reasoning": state["final_prompt"].get("reasoning", ""),
         }
-        yield f"__RESULT_DATA__:{json.dumps(data)}"
-
-    except Exception as e:
-        yield f"오류 발생: {str(e)}\n"
-        data = {
-            "prompt_type": prompt_type,
-            "prompt": f"(오류) {prompt_type}",
-            "reasoning": f"(오류) {str(e)}",
-        }
-        yield f"__RESULT_DATA__:{json.dumps(data)}"
+    }
+    yield f"__RESULT_DATA__:{json.dumps(final_data)}"
 
 
 def run_prompt_generation_agent_streaming(
-    user_intention: str,
-    prompt_type: Optional[str] = None,
-    status_callback: Optional[callable] = None,
-):
-    """별도 스레드 + Queue로 스트리밍"""
-    ctx = get_script_run_ctx()
-    if prompt_type not in ["user", "system"]:
-        prompt_type = "system"
+    user_intention: str, status_callback: Optional[callable] = None
+) -> AsyncGenerator[str, None]:
+    """
+    동기 -> async generator consume
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    async_gen = run_prompt_generation_agent_async(user_intention, status_callback)
 
-    q = queue_module.Queue()
+    async def consume():
+        async for token in async_gen:
+            yield token
 
-    def worker():
-        add_script_run_ctx(thread=None, ctx=ctx)
-        for chunk in _run_agent_and_yield(user_intention, prompt_type, status_callback):
-            q.put(chunk)
-        q.put(None)
+    gen = consume()
 
-    executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(worker)
-
-    while True:
-        item = q.get()
-        if item is None:
-            break
-        yield item
-    executor.shutdown(wait=True)
+    try:
+        while True:
+            token = loop.run_until_complete(anext(gen))
+            yield token
+    except StopAsyncIteration:
+        pass
+    finally:
+        loop.close()
 
 
-################################
-# 6) 최종 외부 공개 함수
-################################
-def generate_prompt_by_intention_streaming(
-    user_intention: str, prompt_type: str, status_callback: Optional[callable] = None
-):
-    yield from run_prompt_generation_agent_streaming(
-        user_intention, prompt_type, status_callback
-    )
-
-
-def generate_prompt_by_intention(
-    user_intention: str, prompt_type: str, status_callback: Optional[callable] = None
-):
-    result = run_prompt_generation_agent(user_intention, prompt_type, status_callback)
-    fp = result.get("final_prompt", {})
-    if "system_prompt" in fp or "user_prompt_template" in fp:
-        if prompt_type == "system":
-            return {
-                "prompt": fp.get("system_prompt", ""),
-                "reasoning": fp.get("reasoning", ""),
-            }
-        else:
-            return {
-                "prompt": fp.get("user_prompt_template", ""),
-                "reasoning": fp.get("reasoning", ""),
-            }
-    else:
-        return {"prompt": f"생성 실패: {prompt_type}", "reasoning": "오류 발생"}
+def generate_system_prompt_by_intention_streaming(
+    user_intention: str, status_callback: Optional[callable] = None
+) -> AsyncGenerator[str, None]:
+    """
+    외부에서 직접 호출할 수 있는 진입점.
+    예시:
+        for token in generate_system_prompt_by_intention_streaming("..."):
+            # token 별로 스트리밍
+            ...
+    """
+    return run_prompt_generation_agent_streaming(user_intention, status_callback)

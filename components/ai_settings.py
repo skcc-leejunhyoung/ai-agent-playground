@@ -23,11 +23,7 @@ from database import (
     update_project_excluded_prompts,
     get_project_excluded_prompts,
 )
-from agent.prompt_generation import (
-    generate_prompt_by_intention,
-    generate_prompt_by_intention_streaming,
-)
-
+from agent.prompt_generation import generate_system_prompt_by_intention_streaming
 
 ##########
 
@@ -439,7 +435,6 @@ def ai_settings_ui(project_id):
                 "다중 User Prompt 활성화", key="user_toggle"
             )
             if user_compare_toggle:
-                btn_generate_usr = False
                 db_user_prompts = get_user_prompts(project_id)
                 if "excluded_user_prompt_ids" not in st.session_state:
                     st.session_state["excluded_user_prompt_ids"] = []
@@ -728,7 +723,7 @@ def ai_settings_ui(project_id):
                 ):
                     st.session_state["user_single_idx"] = 0
 
-                c1, c2, c3, c4, c5 = st.columns([9, 1, 1, 1, 1])
+                c1, c2, c3, c4 = st.columns([9, 1, 1, 1])
                 with c1:
                     if prompt_count > 0:
                         idx = st.selectbox(
@@ -754,14 +749,6 @@ def ai_settings_ui(project_id):
                         )
 
                 with c3:
-                    btn_generate_usr = st.button(
-                        ":material/Cognition:",
-                        key=f"generate_user_single_top_{idx}",
-                        type="tertiary",
-                        use_container_width=True,
-                    )
-
-                with c4:
                     if st.button(
                         ":material/add:",
                         type="tertiary",
@@ -783,7 +770,7 @@ def ai_settings_ui(project_id):
                         )
                         st.rerun()
 
-                with c5:
+                with c4:
                     if prompt_count > 0 and st.button(
                         ":material/remove:",
                         type="tertiary",
@@ -1077,9 +1064,6 @@ def ai_settings_ui(project_id):
         if btn_generate_sys:
             generate_system_prompt_dialog(project_id)
 
-        if btn_generate_usr:
-            generate_user_prompt_dialog(project_id)
-
         if (
             "select_new_system_prompt" in st.session_state
             and st.session_state["select_new_system_prompt"]
@@ -1095,146 +1079,83 @@ def ai_settings_ui(project_id):
             st.session_state["select_new_user_prompt"] = False
 
 
-@st.dialog("System Prompt 생성")
+@st.dialog("System Prompt 자동 생성")
 def generate_system_prompt_dialog(project_id):
     user_intention = st.text_area(
-        "AI 시스템의 역할/동작 방식을 자세히 설명해주세요",
+        "AI 시스템의 역할/작동 방식을 자세히 설명해주세요.",
         height=100,
-        placeholder="예: 고객 문의에 친절하게 응답하는 전문 상담원 역할을 맡아 전문 지식을 제공하면서도 공손하게 응대하는 AI 시스템이 필요합니다.",
+        placeholder="예: 고객 문의에 친절하게 응답하는 전문 상담원 역할 + 화자의 감정을 분석하여 공감있는 응대...",
     )
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.caption("AI가 자동으로 의도에 맞는 시스템 프롬프트를 생성합니다.")
-    with col2:
-        generate_btn = st.button(
-            "✨ 프롬프트 생성",
-            use_container_width=True,
-            type="primary",
-            key="generate_sys_btn",
-        )
-
-    if generate_btn and user_intention:
-        output_container = st.empty()
-        result_data = None
-        full_text = ""
-
-        try:
-            with st.status("시스템 프롬프트 생성 중...", expanded=True) as status:
-                # 상태 업데이트 콜백 함수
-                def update_status_callback(message, state="running"):
-                    status.update(label=message, state=state)
-
-                for token in generate_prompt_by_intention_streaming(
-                    user_intention, "system", update_status_callback
-                ):
-                    if token.startswith("__RESULT_DATA__:"):
-                        try:
-                            result_json = token.replace("__RESULT_DATA__:", "")
-                            result_data = json.loads(result_json)
-                        except Exception as e:
-                            print(f"JSON 파싱 오류: {e}")
-                        continue
-
-                    full_text += token
-                    output_container.markdown(full_text)
-
-            if result_data and result_data.get("prompt"):
-                new_prompt = result_data["prompt"]
-
-                new_id = add_system_prompt(new_prompt, project_id)
-
-                st.session_state["system_prompts"].append(
-                    {"id": new_id, "prompt": new_prompt}
-                )
-
-                new_idx = len(st.session_state["system_prompts"]) - 1
-                st.session_state["system_single_idx"] = new_idx
-                st.session_state["select_new_system_prompt"] = True
-
-            else:
-                st.error("프롬프트 생성에 실패했습니다.")
-
-        except Exception as e:
-            st.error(f"오류 발생: {str(e)}")
-
-    elif generate_btn:
-        st.warning("역할/동작 방식을 입력해주세요.")
-
-    if st.button("close", use_container_width=True):
-        st.rerun()
-
-
-@st.dialog("User Prompt 생성")
-def generate_user_prompt_dialog(project_id):
-    user_intention = st.text_area(
-        "사용자의 의도/목적을 자세히 설명해주세요",
-        height=100,
-        placeholder="예: 특정 주제에 대한 단계별 설명이 필요하며, 시각적 효과를 위한 이모지와 구조화된 형식으로 정보를 제공받고 싶습니다.",
+    generate_btn = st.button(
+        "✨ 프롬프트 생성", use_container_width=True, type="primary"
     )
 
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.caption("AI가 자동으로 의도에 맞는 사용자 프롬프트를 생성합니다.")
-    with col2:
-        generate_btn = st.button(
-            "✨ 프롬프트 생성",
-            use_container_width=True,
-            type="primary",
-            key="generate_usr_btn",
-        )
+    # 노드별 컨테이너
+    partial_containers = {
+        "__NODE1_PARTIAL__": st.empty(),
+        "__NODE2_PARTIAL__": st.empty(),
+        "__NODE3_PARTIAL__": st.empty(),
+        "__NODE4_PARTIAL__": st.empty(),
+        "__NODE4_1_PARTIAL__": st.empty(),
+        "__NODE5_PARTIAL__": st.empty(),
+        "__NODE5_1_PARTIAL__": st.empty(),
+        "__NODE6_PARTIAL__": st.empty(),
+    }
+    partial_texts = {k: "" for k in partial_containers}
+
+    final_container = st.empty()
 
     if generate_btn and user_intention:
-        output_container = st.empty()
-        result_data = None
-        full_text = ""
+        for token in generate_system_prompt_by_intention_streaming(user_intention):
+            # 1) 최종 결과?
+            if token.startswith("__RESULT_DATA__"):
+                json_str = token.replace("__RESULT_DATA__:", "")
+                try:
+                    data = json.loads(json_str)
+                    fp = data.get("final_prompt", {})
+                    sp = fp.get("system_prompt", "")
+                    rs = fp.get("reasoning", "")
+                    if sp:
+                        st.success("System Prompt created!")
+                        final_container.markdown(
+                            f"**System Prompt**\n```\n{sp}\n```\n\nReasoning:\n```\n{rs}\n```"
+                        )
+                except Exception as e:
+                    st.error(f"파싱 에러: {e}")
+                continue
 
-        try:
-            with st.status("유저 프롬프트 생성 중...", expanded=True) as status:
-                # 상태 업데이트 콜백 함수
-                def update_status_callback(message, state="running"):
-                    status.update(label=message, state=state)
+            # 2) partial: "__NODE1_PARTIAL__:<token>"
+            #    or "__FINAL_PARSE__" / "__FINAL_PARSE_ERROR__"
+            if token.startswith("__NODE"):
+                # 예: "__NODE4_PARTIAL__"
+                splitted = token.split(":", 1)
+                if len(splitted) == 2:
+                    prefix, content = splitted
+                    if prefix in partial_containers:
+                        partial_texts[prefix] += content
+                        partial_containers[prefix].markdown(
+                            f"**{prefix}**:\n\n{partial_texts[prefix]}"
+                        )
+                    else:
+                        # e.g. "__NODE6_PARTIAL__" or unknown
+                        st.info(token)
+            elif token.startswith("__FINAL_PARSE__"):
+                # parse 완료 시점
+                # e.g. "__FINAL_PARSE__:{...}"
+                raw_json = token.replace("__FINAL_PARSE__:", "")
+                st.markdown(f"**노드 parse 완료**: ```json\n{raw_json}\n```")
 
-                for token in generate_prompt_by_intention_streaming(
-                    user_intention, "user", update_status_callback
-                ):
-                    if token.startswith("__RESULT_DATA__:"):
-                        try:
-                            result_json = token.replace("__RESULT_DATA__:", "")
-                            result_data = json.loads(result_json)
-                        except Exception as e:
-                            print(f"JSON 파싱 오류: {e}")
-                        continue
-
-                    full_text += token
-                    output_container.markdown(full_text)
-
-            if result_data and result_data.get("prompt"):
-                new_prompt = result_data["prompt"]
-
-                new_id = add_user_prompt(new_prompt, project_id)
-
-                st.session_state["user_prompts"].append(
-                    {
-                        "id": new_id,
-                        "prompt": new_prompt,
-                        "eval_method": "pass",
-                        "eval_keyword": "",
-                    }
-                )
-
-                new_idx = len(st.session_state["user_prompts"]) - 1
-                st.session_state["user_single_idx"] = new_idx
-                st.session_state["select_new_user_prompt"] = True
+            elif token.startswith("__FINAL_PARSE_ERROR__"):
+                err = token.replace("__FINAL_PARSE_ERROR__:", "")
+                st.error(f"Parse Error: {err}")
 
             else:
-                st.error("프롬프트 생성에 실패했습니다.")
-
-        except Exception as e:
-            st.error(f"오류 발생: {str(e)}")
+                # 그냥 표시
+                st.info(token)
 
     elif generate_btn:
-        st.warning("의도/목적을 입력해주세요.")
+        st.warning("역할/작동 방식을 입력해주세요.")
 
-    if st.button("close", use_container_width=True):
+    if st.button("close"):
         st.rerun()
