@@ -1,6 +1,5 @@
 import os
-from typing import List, Dict, Union
-import requests
+from typing import List, Dict
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -32,6 +31,23 @@ client = AzureOpenAI(
 )
 
 
+# NLTK 리소스 다운로드
+def download_nltk_resources():
+    """필요한 NLTK 리소스 다운로드"""
+    resources = [
+        "punkt",
+        "punkt_tab",
+        "averaged_perceptron_tagger",
+        "averaged_perceptron_tagger_eng",
+        "universal_tagset",
+    ]
+    for resource in resources:
+        try:
+            nltk.download(resource, quiet=True)
+        except Exception as e:
+            print(f"Warning: Failed to download NLTK resource '{resource}': {str(e)}")
+
+
 def extract_keywords(text: str) -> List[str]:
     """텍스트에서 명사 키워드 추출"""
     okt = Okt()
@@ -39,8 +55,9 @@ def extract_keywords(text: str) -> List[str]:
     korean_nouns = okt.nouns(text)
 
     # 영어 명사 추출
-    nltk.download("punkt")
-    nltk.download("averaged_perceptron_tagger")
+    # 시작 시 리소스 다운로드
+    download_nltk_resources()
+
     words = nltk.word_tokenize(text)
     english_nouns = [word for (word, pos) in nltk.pos_tag(words) if pos[:2] == "NN"]
 
@@ -66,45 +83,80 @@ def create_metadata(text: str, source: str, chunk_index: int) -> Dict:
 
 
 def process_document(
-    source: str, content_type: str = "url"
+    source: str, content_type: str = "txt"
 ) -> tuple[List[Document], np.ndarray]:
     """문서 처리 및 청크 생성"""
-    # 텍스트 추출
-    if content_type == "url":
-        response = requests.get(source)
-        soup = BeautifulSoup(response.text, "html.parser")
-        text = soup.get_text()
-    else:  # txt 파일
+    try:
+        # 파일 읽기
         with open(source, "r", encoding="utf-8") as file:
-            text = file.read()
+            content = file.read()
 
-    # 텍스트 분할
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-        length_function=len,
-    )
-    chunks = text_splitter.split_text(text)
+        # HTML 파일인 경우 파싱
+        if content_type in ["html", "htm"]:
+            soup = BeautifulSoup(content, "html.parser")
 
-    # 청크를 Document 객체로 변환하고 메타데이터 추가
-    documents = []
-    embeddings = []
-    for i, chunk in enumerate(chunks):
-        metadata = create_metadata(chunk, source, i)
-        # Azure OpenAI 임베딩 생성
-        embedding = (
-            client.embeddings.create(
-                model=os.getenv("AOAI_DEPLOY_EMBED_3_SMALL"), input=chunk
-            )
-            .data[0]
-            .embedding
+            # 불필요한 요소 제거
+            for tag in soup(["script", "style", "nav", "footer", "header"]):
+                tag.decompose()
+
+            # 본문 추출
+            paragraphs = []
+            for p in soup.find_all(["p", "article", "section", "div"]):
+                text = p.get_text(strip=True)
+                if len(text) > 50:  # 의미 있는 텍스트만 선택
+                    paragraphs.append(text)
+
+            text = "\n\n".join(paragraphs)
+        else:
+            # TXT 파일은 그대로 사용
+            text = content
+
+        # 텍스트가 충분한지 확인
+        if len(text.strip()) < 100:
+            print("Warning: 추출된 텍스트가 너무 짧습니다.")
+            return [], np.array([])
+
+        # 디버깅 정보 출력
+        print(f"추출된 텍스트 길이: {len(text)}")
+
+        # 텍스트 분할
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            length_function=len,
+            separators=["\n\n", "\n", ".", "!", "?", ",", " "],
         )
 
-        embeddings.append(embedding)
-        doc = Document(page_content=chunk, metadata=metadata)
-        documents.append(doc)
+        chunks = text_splitter.split_text(text)
+        chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]
 
-    return documents, np.array(embeddings)
+        print(f"생성된 청크 수: {len(chunks)}")
+        print(
+            f"평균 청크 길이: {sum(len(chunk) for chunk in chunks) / len(chunks) if chunks else 0}"
+        )
+
+        # Document 객체 생성
+        documents = []
+        embeddings = []
+        for i, chunk in enumerate(chunks):
+            metadata = create_metadata(chunk, source, i)
+            embedding = (
+                client.embeddings.create(
+                    model=os.getenv("AOAI_DEPLOY_EMBED_3_SMALL"), input=chunk
+                )
+                .data[0]
+                .embedding
+            )
+
+            embeddings.append(embedding)
+            doc = Document(page_content=chunk, metadata=metadata)
+            documents.append(doc)
+
+        return documents, np.array(embeddings)
+
+    except Exception as e:
+        print(f"문서 처리 중 오류 발생: {str(e)}")
+        return [], np.array([])
 
 
 def save_vector_db(
