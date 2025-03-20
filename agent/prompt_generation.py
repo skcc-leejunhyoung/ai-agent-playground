@@ -3,16 +3,14 @@
 import os
 import json
 import asyncio
-import queue as queue_module
-from typing import List, Dict, Any, Optional, AsyncGenerator, Generator
+import time
+from typing import List, Optional, AsyncGenerator, Generator
 
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 from openai import AzureOpenAI
 import pydantic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 #############
 load_dotenv()
@@ -352,142 +350,87 @@ async def run_prompt_generation_agent_async(
     ################################
     update_status("1,2,3번 노드 (병렬) 시작", "info")
 
+    # 생성기 생성
     node1_gen = node_system_1_role_guidance(state.copy())
     node2_gen = node_system_2_output_example(state.copy())
     node3_gen = node_system_3_role_summary(state.copy())
 
-    done1 = False
-    done2 = False
-    done3 = False
+    # 생성기와 관련 상태
+    generators = [
+        (node1_gen, "node1", False, ""),
+        (node2_gen, "node2", False, ""),
+        (node3_gen, "node3", False, ""),
+    ]
 
-    node1_parsed_json = None
-    node2_parsed_json = None
-    node3_parsed_json = None
+    parsed_results = {"node1": None, "node2": None, "node3": None}
 
-    node1_buffer = ""
-    node2_buffer = ""
-    node3_buffer = ""
+    try:
+        # 모든 생성기가 완료될 때까지 라운드 로빈 방식으로 실행
+        while not all(done for _, _, done, _ in generators):
+            for i, (gen, name, done, buffer) in enumerate(generators):
+                if done:
+                    continue
 
-    while not (done1 and done2 and done3):
-        # node1
-        if not done1:
+                try:
+                    # 현재 생성기에서 다음 부분 가져오기
+                    part = await asyncio.wait_for(gen.asend(None), timeout=0.1)
+                    yield part
+
+                    # 버퍼 업데이트
+                    new_buffer = buffer + part
+                    generators[i] = (gen, name, done, new_buffer)
+
+                    # FINAL_PARSE 확인
+                    if "__FINAL_PARSE__" in new_buffer:
+                        final_parse_index = new_buffer.find("__FINAL_PARSE__")
+                        json_str = new_buffer[final_parse_index:].replace(
+                            "__FINAL_PARSE__:", ""
+                        )
+                        parsed_results[name] = json.loads(json_str)
+                        generators[i] = (gen, name, True, new_buffer)
+
+                    elif "__FINAL_PARSE_ERROR__" in new_buffer:
+                        generators[i] = (gen, name, True, new_buffer)
+
+                except asyncio.TimeoutError:
+                    # 타임아웃 발생 시 다음 생성기로 넘어감
+                    continue
+                except StopAsyncIteration:
+                    # 생성기 완료
+                    generators[i] = (gen, name, True, buffer)
+                except Exception as e:
+                    # 오류 처리
+                    yield f"__{name.upper()}_ERROR__: {str(e)}"
+                    generators[i] = (gen, name, True, buffer)
+
+    finally:
+        # 모든 생성기를 안전하게 닫음
+        for gen, name, _, _ in generators:
             try:
-                part = await node1_gen.asend(None)
-                yield part  # (1) partial 토큰을 그대로 외부에 내보냄
-                node1_buffer += part  # (2) 노드1 버퍼에 계속 누적
-
-                # 이제 누적된 문자열에서 "__FINAL_PARSE__"가 있는지 확인
-                if "__FINAL_PARSE__" in node1_buffer:
-                    # "__FINAL_PARSE__:{...}" 부분을 잘라내서 JSON으로 파싱
-                    final_parse_index = node1_buffer.find("__FINAL_PARSE__")
-                    json_str = node1_buffer[final_parse_index:].replace(
-                        "__FINAL_PARSE__:", ""
-                    )
-                    node1_parsed_json = json.loads(json_str)
-                    print("node1 완료")
-                    print(part)
-                    print(node1_parsed_json)
-                    print(state)
-                    done1 = True
-
-                elif "__FINAL_PARSE_ERROR__" in node1_buffer:
-                    print("node1 ERROR")
-                    print(part)
-                    print(node1_parsed_json)
-                    print(state)
-                    done1 = True
-
-            except StopAsyncIteration:
-                print("node1 StopAsyncIteration")
-                print(part)
-                print(node1_parsed_json)
-                print(state)
-                done1 = True
-
-        # node2
-        if not done2:
-            try:
-                part = await node2_gen.asend(None)
-                yield part
-                node2_buffer += part
-
-                if "__FINAL_PARSE__" in node2_buffer:
-                    final_parse_index = node2_buffer.find("__FINAL_PARSE__")
-                    json_str = node2_buffer[final_parse_index:].replace(
-                        "__FINAL_PARSE__:", ""
-                    )
-                    node2_parsed_json = json.loads(json_str)
-                    print("node2 완료")
-                    print(part)
-                    print(node2_parsed_json)
-                    print(state)
-                    done2 = True
-
-                elif "__FINAL_PARSE_ERROR__" in node2_buffer:
-                    print("node2 ERROR")
-                    print(part)
-                    print(node2_parsed_json)
-                    print(state)
-                    done2 = True
-
-            except StopAsyncIteration:
-                print("node2 StopAsyncIteration")
-                print(part)
-                print(node2_parsed_json)
-                print(state)
-                done2 = True
-
-        # node3
-        if not done3:
-            try:
-                part = await node3_gen.asend(None)
-                yield part
-                node3_buffer += part
-
-                if "__FINAL_PARSE__" in node3_buffer:
-                    final_parse_index = node3_buffer.find("__FINAL_PARSE__")
-                    json_str = node3_buffer[final_parse_index:].replace(
-                        "__FINAL_PARSE__:", ""
-                    )
-                    node3_parsed_json = json.loads(json_str)
-                    print("node3 완료")
-                    print(part)
-                    print(node3_parsed_json)
-                    print(state)
-                    done3 = True
-
-                elif "__FINAL_PARSE_ERROR__" in node3_buffer:
-                    print("node3 ERROR")
-                    print(part)
-                    print(node3_parsed_json)
-                    print(state)
-                    done3 = True
-
-            except StopAsyncIteration:
-                print("node3 StopAsyncIteration")
-                print(part)
-                print(node3_parsed_json)
-                print(state)
-                done3 = True
-
-    update_status("1,2,3번 노드 (병렬) 완료", "info")
-    print(state)
+                await gen.aclose()
+            except Exception:
+                pass
 
     # 결과 state 반영
-    if node1_parsed_json:
-        state["role_guidance"]["role"] = node1_parsed_json.get("role", "")
-        state["role_guidance"]["instructions"] = node1_parsed_json.get(
+    if parsed_results["node1"]:
+        state["role_guidance"]["role"] = parsed_results["node1"].get("role", "")
+        state["role_guidance"]["instructions"] = parsed_results["node1"].get(
             "instructions", ""
         )
-        state["role_guidance"]["information"] = node1_parsed_json.get("information", "")
+        state["role_guidance"]["information"] = parsed_results["node1"].get(
+            "information", ""
+        )
 
-    if node2_parsed_json:
-        state["output_example"]["output_example"] = node2_parsed_json.get(
+    if parsed_results["node2"]:
+        state["output_example"]["output_example"] = parsed_results["node2"].get(
             "output_example", ""
         )
 
-    if node3_parsed_json:
-        state["role_summary"]["summary"] = node3_parsed_json.get("summary", [])
+    if parsed_results["node3"]:
+        state["role_summary"]["summary"] = parsed_results["node3"].get("summary", [])
+
+    update_status("1,2,3번 노드 (병렬) 완료", "info")
+    time.sleep(2)
 
     ################################
     # 2) 노드4 (충돌 평가)
@@ -505,6 +448,7 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("4번 노드 완료", "info")
+    time.sleep(2)
 
     if node4_parsed_json:
         state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
@@ -536,7 +480,7 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("5번 노드 완료", "info")
-
+    time.sleep(2)
     if node5_parsed_json:
         state["coverage_evaluation"]["is_complete"] = node5_parsed_json.get(
             "is_complete", False
@@ -560,6 +504,7 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("5.1번 노드 완료", "info")
+    time.sleep(2)
 
     if node5_1_parsed_json:
         # 보완된 결과를 state에 반영(필요시)
@@ -590,6 +535,7 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("6번 노드 완료", "info")
+    time.sleep(2)
 
     if node6_parsed_json:
         state["final_prompt"] = node6_parsed_json

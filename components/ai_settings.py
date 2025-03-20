@@ -1062,7 +1062,7 @@ def ai_settings_ui(project_id):
             st.rerun()
 
         if btn_generate_sys:
-            generate_system_prompt_dialog(project_id)
+            generate_system_prompt_dialog()
 
         if (
             "select_new_system_prompt" in st.session_state
@@ -1080,9 +1080,11 @@ def ai_settings_ui(project_id):
 
 
 @st.dialog("System Prompt 자동 생성")
-def generate_system_prompt_dialog(project_id):
+def generate_system_prompt_dialog():
     user_intention = st.text_area(
         "AI 시스템의 역할/작동 방식을 자세히 설명해주세요.",
+        # value 선입력
+        value="캐릭터와 상황을 입력하면 그 상황에 캐릭터가 할법한 말을 하는 챗봇 만들고싶어. 예시 입력: 캐릭터 - 피카츄 , 상황 - 레고 밟았을때",
         height=100,
         placeholder="예: 고객 문의에 친절하게 응답하는 전문 상담원 역할 + 화자의 감정을 분석하여 공감있는 응대...",
     )
@@ -1104,11 +1106,33 @@ def generate_system_prompt_dialog(project_id):
     }
     partial_texts = {k: "" for k in partial_containers}
 
+    # 결과 파싱용 컨테이너 추가
+    result_containers = {k: st.empty() for k in partial_containers}
     final_container = st.empty()
+
+    def parse_node_content(node_key, content):
+        """노드 내용에서 JSON 파싱 시도"""
+        if "__FINAL_PARSE__:" in content:
+            try:
+                # 다음 노드 마커나 텍스트가 있을 경우 잘라내기
+                if "__PARSED_OBJECT__:" in content:
+                    json_part = content.split("__PARSED_OBJECT__:", 1)[0].strip()
+                    json_part = json_part.split("__FINAL_PARSE__:", 1)[1].strip()
+                else:
+                    json_part = content.split("__FINAL_PARSE__:", 1)[1].strip()
+
+                data = json.loads(json_part)
+                result_containers[node_key].markdown(
+                    f"**{node_key.replace('__', '')} 결과**:\n\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"
+                )
+                return True
+            except Exception as e:
+                result_containers[node_key].error(f"파싱 에러 ({node_key}): {e}")
+        return False
 
     if generate_btn and user_intention:
         for token in generate_system_prompt_by_intention_streaming(user_intention):
-            # 1) 최종 결과?
+            # 최종 결과 처리
             if token.startswith("__RESULT_DATA__"):
                 json_str = token.replace("__RESULT_DATA__:", "")
                 try:
@@ -1119,39 +1143,36 @@ def generate_system_prompt_dialog(project_id):
                     if sp:
                         st.success("System Prompt created!")
                         final_container.markdown(
-                            f"**System Prompt**\n```\n{sp}\n```\n\nReasoning:\n```\n{rs}\n```"
+                            f"**System Prompt**\n```\n{sp}\n```\n\n**Reasoning**:\n```\n{rs}\n```"
                         )
                 except Exception as e:
                     st.error(f"파싱 에러: {e}")
                 continue
 
-            # 2) partial: "__NODE1_PARTIAL__:<token>"
-            #    or "__FINAL_PARSE__" / "__FINAL_PARSE_ERROR__"
-            if token.startswith("__NODE"):
-                # 예: "__NODE4_PARTIAL__"
-                splitted = token.split(":", 1)
-                if len(splitted) == 2:
-                    prefix, content = splitted
-                    if prefix in partial_containers:
-                        partial_texts[prefix] += content
-                        partial_containers[prefix].markdown(
-                            f"**{prefix}**:\n\n{partial_texts[prefix]}"
-                        )
-                    else:
-                        # e.g. "__NODE6_PARTIAL__" or unknown
-                        st.info(token)
-            elif token.startswith("__FINAL_PARSE__"):
-                # parse 완료 시점
-                # e.g. "__FINAL_PARSE__:{...}"
-                raw_json = token.replace("__FINAL_PARSE__:", "")
-                st.markdown(f"**노드 parse 완료**: ```json\n{raw_json}\n```")
+            # 노드별 내용 처리
+            if ":" in token:
+                node_prefix, content = token.split(":", 1)
+                if node_prefix in partial_containers:
+                    partial_texts[node_prefix] += content
 
+                    # __FINAL_PARSE__가 포함되어 있으면 해당 노드의 컨테이너를 비우고 결과만 표시
+                    if "__FINAL_PARSE__:" in partial_texts[node_prefix]:
+                        partial_containers[
+                            node_prefix
+                        ].empty()  # 원본 텍스트 컨테이너를 비움
+                        parse_node_content(node_prefix, partial_texts[node_prefix])
+                    else:
+                        partial_containers[node_prefix].markdown(
+                            f"{node_prefix}:\n\n{partial_texts[node_prefix]}"
+                        )
+                else:
+                    # 알 수 없는 노드
+                    st.info(token)
             elif token.startswith("__FINAL_PARSE_ERROR__"):
                 err = token.replace("__FINAL_PARSE_ERROR__:", "")
                 st.error(f"Parse Error: {err}")
-
             else:
-                # 그냥 표시
+                # 그 외 토큰은 일반 정보로 표시
                 st.info(token)
 
     elif generate_btn:
