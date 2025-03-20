@@ -702,15 +702,6 @@ async def run_prompt_generation_agent_async(
     if node6_parsed_json:
         state["final_prompt"] = node6_parsed_json
 
-    # 마지막 결과 (예: "__RESULT_DATA__:{...}")
-    final_data = {
-        "final_prompt": {
-            "system_prompt": state["final_prompt"].get("system_prompt", ""),
-            "reasoning": state["final_prompt"].get("reasoning", ""),
-        }
-    }
-    yield f"__RESULT_DATA__:{json.dumps(final_data)}"
-
 
 def run_prompt_generation_agent_streaming(
     user_intention: str, status_callback: Optional[callable] = None
