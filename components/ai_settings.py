@@ -1135,7 +1135,7 @@ def generate_system_prompt_dialog():
                 data = json.loads(json_part)
                 with result_containers[node_key].expander(
                     f"**:blue[{node_key.replace('__', '').replace('NODE1_PARTIAL', '역할 / 지시사항 / 추가정보 생성').replace('NODE2_PARTIAL', '예시출력 생성').replace('NODE3_PARTIAL', '유저 의도 분석').replace('NODE4_PARTIAL', '조건 충돌 검사').replace('NODE5_PARTIAL', '의도 반영 평가').replace('NODE5_1_PARTIAL', '의도 반영 개선').replace('NODE6_PARTIAL', '최종 시스템 프롬프트')} 결과]**",
-                    expanded=False,
+                    expanded=(node_key == "__NODE6_PARTIAL__"),
                 ):
                     st.markdown(
                         f"```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```"

@@ -163,7 +163,7 @@ async def parse_chat_streaming_gen(
         except Exception as e:
             if attempt < max_retries - 1:
                 # 재시도 전에 잠시 쉼
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.2)
                 continue
             else:
                 yield f"__FINAL_PARSE_ERROR__:{str(e)}"
@@ -391,6 +391,7 @@ async def run_prompt_generation_agent_async(
 
                     # 버퍼 업데이트
                     new_buffer = buffer + part
+                    time.sleep(0.03)
                     generators[i] = (gen, name, done, new_buffer)
 
                     # FINAL_PARSE 확인
@@ -443,7 +444,6 @@ async def run_prompt_generation_agent_async(
         state["role_summary"]["summary"] = parsed_results["node3"].get("summary", [])
 
     update_status("1,2,3번 노드 (병렬) 완료", "info")
-    time.sleep(2)
 
     ################################
     # 2) 노드4 (충돌 평가)
@@ -453,6 +453,7 @@ async def run_prompt_generation_agent_async(
     node4_parsed_json = None
 
     async for part in node4_gen:
+        time.sleep(0.03)
         yield part
         if part.startswith("__FINAL_PARSE__"):
             raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -461,7 +462,6 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("4번 노드 완료", "info")
-    time.sleep(2)
 
     if node4_parsed_json:
         state["conflict_evaluation"]["has_conflicts"] = node4_parsed_json.get(
@@ -490,6 +490,7 @@ async def run_prompt_generation_agent_async(
         node4_1_parsed_json = None
 
         async for part in node4_1_gen:
+            time.sleep(0.03)
             yield part
             if part.startswith("__FINAL_PARSE__"):
                 raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -498,7 +499,6 @@ async def run_prompt_generation_agent_async(
                 pass
 
         update_status(f"4.1번 노드 (충돌 해결) #{conflict_iteration} 완료", "info")
-        time.sleep(1)
 
         # 해결된 정보로 상태 업데이트
         if node4_1_parsed_json:
@@ -519,6 +519,7 @@ async def run_prompt_generation_agent_async(
         node4_parsed_json = None
 
         async for part in node4_gen:
+            time.sleep(0.03)
             yield part
             if part.startswith("__FINAL_PARSE__"):
                 raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -527,7 +528,6 @@ async def run_prompt_generation_agent_async(
                 pass
 
         update_status(f"4번 노드 (재평가) #{conflict_iteration} 완료", "info")
-        time.sleep(1)
 
         # 재평가 결과 상태 업데이트
         if node4_parsed_json:
@@ -571,6 +571,7 @@ async def run_prompt_generation_agent_async(
 
         # 모든 응답을 수신
         async for part in node5_gen:
+            time.sleep(0.03)
             yield part
 
             # __NODE5_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
@@ -601,7 +602,6 @@ async def run_prompt_generation_agent_async(
             update_status(f"문제된 JSON 문자열: {node5_buffer[:200]}...", "debug")
 
         update_status(f"5번 노드 (커버리지 평가) #{coverage_iteration} 완료", "info")
-        time.sleep(1)
 
         # 평가 결과 상태 업데이트
         if node5_parsed_json:
@@ -629,6 +629,7 @@ async def run_prompt_generation_agent_async(
 
         # 모든 응답을 수신
         async for part in node5_1_gen:
+            time.sleep(0.03)
             yield part
 
             # __NODE5_1_PARTIAL__: 접두사가 있는 경우 실제 내용만 추출
@@ -659,7 +660,6 @@ async def run_prompt_generation_agent_async(
             update_status(f"문제된 JSON 문자열: {node5_1_buffer[:200]}...", "debug")
 
         update_status(f"5.1번 노드 (커버리지 보완) #{coverage_iteration} 완료", "info")
-        time.sleep(1)
 
         # 보완된 결과를 상태에 반영
         if node5_1_parsed_json:
@@ -689,6 +689,7 @@ async def run_prompt_generation_agent_async(
     node6_parsed_json = None
 
     async for part in node6_gen:
+        time.sleep(0.03)
         yield part
         if part.startswith("__FINAL_PARSE__"):
             raw_json = part.replace("__FINAL_PARSE__:", "")
@@ -697,7 +698,6 @@ async def run_prompt_generation_agent_async(
             pass
 
     update_status("6번 노드 완료", "info")
-    time.sleep(2)
 
     if node6_parsed_json:
         state["final_prompt"] = node6_parsed_json
