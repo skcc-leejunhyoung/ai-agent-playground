@@ -28,7 +28,7 @@ llm_gpt4o = AzureChatOpenAI(
     api_version=AOAI_API_VERSION,
     deployment_name=AOAI_DEPLOY_GPT4O,
     temperature=0.7,
-    max_tokens=500,
+    max_tokens=2000,
     model_kwargs={"response_format": {"type": "json_object"}},
 )
 

@@ -76,13 +76,13 @@ def evaluation_and_improvement(
                     prompt_id = add_system_prompt(system_prompt_editor, project_id)
                     eval_state["improved_prompt_id"] = prompt_id
                     st.toast("새로운 시스템 프롬프트가 저장되었습니다.")
-                    time.sleep(0.7)
+                    time.sleep(0.4)
                 else:
                     update_system_prompt(
                         eval_state["improved_prompt_id"], system_prompt_editor
                     )
                     st.toast("시스템 프롬프트가 업데이트되었습니다.")
-                    time.sleep(0.7)
+                    time.sleep(0.4)
                 st.rerun()
 
             st.markdown(":orange[**개선 이유 및 방향성**]  ")
